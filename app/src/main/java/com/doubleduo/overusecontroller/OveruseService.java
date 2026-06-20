@@ -24,6 +24,8 @@ public class OveruseService extends Service {
     private static final long STAGE_UP_INTERVAL_MS = 2L * 60L * 1000L;
     private static final long RECOVERY_INTERVAL_MS = 1L * 60L * 1000L;
     private static final long VISUAL_TICK_MS = 500L;
+    public static final String ACTION_SET_STAGE = "com.doubleduo.overusecontroller.SET_STAGE";
+    public static final String EXTRA_STAGE = "stage";
 
     private final Handler handler = new Handler();
     private WindowManager windowManager;
@@ -42,6 +44,14 @@ public class OveruseService extends Service {
         else context.startService(i);
     }
 
+    public static void setStageForTest(Context context, int stage) {
+        Intent i = new Intent(context, OveruseService.class);
+        i.setAction(ACTION_SET_STAGE);
+        i.putExtra(EXTRA_STAGE, stage);
+        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
+        else context.startService(i);
+    }
+
     @Override
     public void onCreate() {
         super.onCreate();
@@ -56,6 +66,15 @@ public class OveruseService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_SET_STAGE.equals(intent.getAction())) {
+            int requested = intent.getIntExtra(EXTRA_STAGE, stage);
+            setStage(requested, requested > stage);
+            if (requested <= 0) {
+                screenOnAccumulatedMs = 0L;
+                screenOffAccumulatedMs = 0L;
+                nextStageUpAtMs = GRACE_MS;
+            }
+        }
         return START_STICKY;
     }
 
@@ -104,7 +123,11 @@ public class OveruseService extends Service {
         int clamped = Math.max(0, Math.min(MAX_STAGE, newStage));
         if (clamped == stage) return;
         stage = clamped;
-        Settings.System.putInt(getContentResolver(), "overuse_mitigation_stage", stage);
+        try {
+            Settings.System.putInt(getContentResolver(), "overuse_mitigation_stage", stage);
+        } catch (Throwable ignored) {
+            // Overlay and notifications should still work even when WRITE_SETTINGS is not granted.
+        }
         applyOverlayStage();
         applyAnimationScaleForStage();
         String title = increased ? "단계가 높아졌습니다" : "단계가 낮아졌습니다";

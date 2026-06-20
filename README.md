@@ -39,3 +39,10 @@
 ## 주의
 
 이건 SystemUI.apk 자체를 직접 수정하는 방식이 아니라 `/system/priv-app`에 시스템 앱을 추가하는 방식이다. SystemUI 리소스 리빌드 문제를 피하면서 시연 가능한 효과를 얻기 위한 MVP다.
+
+
+## v0.2 test/fix notes
+
+- Fixed stage changes so overlay/notifications still work even if WRITE_SETTINGS is not granted.
+- Added in-app test buttons for stage 1, stage 3, stage 5, and reset stage 0.
+- Normal mode still uses 10 minutes of screen-on time before stage 1.
