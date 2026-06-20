@@ -1,0 +1,14 @@
+plugins { id 'com.android.application' }
+
+android {
+    namespace 'com.doubleduo.overusecontroller'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'com.doubleduo.overusecontroller'
+        minSdk 23
+        targetSdk 25
+        versionCode 1
+        versionName '0.1'
+    }
+}
