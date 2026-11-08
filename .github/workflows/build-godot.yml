@@ -47,6 +47,19 @@ jobs:
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/godot-debug.keystore" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+      - name: Configure Godot Editor SDK paths
+        shell: bash
+        run: |
+          cat > /tmp/godot_ci_settings.gd <<'GD'
+          extends SceneTree
+          func _initialize() -> void:
+              var editor_settings = EditorInterface.get_editor_settings()
+              editor_settings.set_setting("export/android/android_sdk_path", OS.get_environment("ANDROID_HOME"))
+              editor_settings.set_setting("export/android/java_sdk_path", OS.get_environment("JAVA_HOME"))
+              editor_settings.save()
+              quit()
+          GD
+          godot --headless --editor --path godot --script /tmp/godot_ci_settings.gd
       - name: Import Godot project
         run: godot --headless --editor --path godot --quit
       - name: Export Windows x64
