@@ -1,0 +1,111 @@
+name: Publish Overuse Controller v0.6.0
+
+on:
+  push:
+    branches: [feature/godot-overuse-controller]
+    paths: ['.github/workflows/release-godot-v0.6.yml']
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_SHA: 4d3775dd36c3d8a901982dbb6c3be70437c93a28
+      SOURCE_RUN: "42451195409"
+      RELEASE_TAG: v0.6.0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify the exact successful v0.6.0 build
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" \
+            --jq '{head_sha,status,conclusion}' > /tmp/source.json
+          test "$(jq -r .head_sha /tmp/source.json)" = "$SOURCE_SHA"
+          test "$(jq -r .conclusion /tmp/source.json)" = success
+          test "$(jq -r .status /tmp/source.json)" = completed
+          git cat-file -e "$SOURCE_SHA^{commit}"
+
+      - name: Download Android and Windows build artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p incoming/android incoming/windows dist
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name OveruseController-Android-APK --dir incoming/android
+          gh run download "$SOURCE_RUN" --repo "$GITHUB_REPOSITORY" \
+            --name OveruseController-Win64 --dir incoming/windows
+          test -s incoming/android/OveruseController-Android.apk
+          test -s incoming/windows/OveruseController-Win64.zip
+          cp incoming/android/OveruseController-Android.apk dist/OveruseController-v0.6.0-Android-arm64.apk
+          cp incoming/windows/OveruseController-Win64.zip dist/OveruseController-v0.6.0-Windows-x64.zip
+
+      - name: Archive matching source from the built commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format zip --prefix OveruseController-v0.6.0-Source/ \
+            --output dist/OveruseController-v0.6.0-Godot-Source.zip "$SOURCE_SHA" godot
+
+      - name: Validate archives and create checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          unzip -t dist/OveruseController-v0.6.0-Windows-x64.zip | tail -1
+          unzip -t dist/OveruseController-v0.6.0-Godot-Source.zip | tail -1
+          unzip -t dist/OveruseController-v0.6.0-Android-arm64.apk | tail -1
+          for exe in OveruseController-Win64.exe OveruseOverlay-Win64.exe OveruseCpuLimit-Win64.exe; do
+            unzip -Z -1 dist/OveruseController-v0.6.0-Windows-x64.zip | grep -Fx "$exe"
+          done
+          cd dist
+          sha256sum OveruseController-v0.6.0-Android-arm64.apk \
+            OveruseController-v0.6.0-Windows-x64.zip \
+            OveruseController-v0.6.0-Godot-Source.zip > SHA256SUMS.txt
+
+      - name: Publish experimental GitHub Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Overuse Controller v0.6.0 (Experimental)" \
+              --notes-file godot/RELEASE_NOTES_v0.6.0.md
+            gh release upload "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+              dist/OveruseController-v0.6.0-Android-arm64.apk \
+              dist/OveruseController-v0.6.0-Windows-x64.zip \
+              dist/OveruseController-v0.6.0-Godot-Source.zip \
+              dist/SHA256SUMS.txt
+          else
+            gh release create "$RELEASE_TAG" \
+              dist/OveruseController-v0.6.0-Android-arm64.apk \
+              dist/OveruseController-v0.6.0-Windows-x64.zip \
+              dist/OveruseController-v0.6.0-Godot-Source.zip \
+              dist/SHA256SUMS.txt \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$SOURCE_SHA" \
+              --title "Overuse Controller v0.6.0 (Experimental)" \
+              --notes-file godot/RELEASE_NOTES_v0.6.0.md \
+              --prerelease
+          fi
+
+      - name: Verify all release assets exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json url,tagName,assets,isPrerelease > /tmp/release.json
+          jq '{url,tagName,isPrerelease,assets:[.assets[].name]}' /tmp/release.json
+          for asset in OveruseController-v0.6.0-Android-arm64.apk \
+            OveruseController-v0.6.0-Windows-x64.zip \
+            OveruseController-v0.6.0-Godot-Source.zip SHA256SUMS.txt; do
+            jq -e --arg name "$asset" '.assets[] | select(.name == $name)' /tmp/release.json >/dev/null
+          done
