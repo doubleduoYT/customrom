@@ -89,6 +89,18 @@ public class OveruseBridge extends GodotPlugin {
     }
 
     @UsedByGodot
+    public void setRootCpuEnabled(boolean enabled) {
+        prefs().edit().putBoolean("cpu_root_enabled", enabled).apply();
+        if (isRunning()) send("PERFORMANCE", -1);
+    }
+
+    @UsedByGodot
+    public String getPerformanceStatus() {
+        if (!prefs().getBoolean("cpu_root_enabled", false)) return "ROOT_DISABLED";
+        return prefs().getString("cpu_root_status", "ROOT_READY_WAITING_STAGE");
+    }
+
+    @UsedByGodot
     public String getOverlayStatus() {
         SharedPreferences p = prefs();
         if (!p.getBoolean("running", false))
@@ -98,7 +110,7 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.4.1-android-v2";
+        return "0.6.0-android-cpufreq";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }

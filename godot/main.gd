@@ -16,7 +16,8 @@ const MAX_STAGE = 5
 
 var settings = {
 	"grace": 10, "interval": 2, "recovery": 1,
-	"strength": 65, "color": true, "masks": true
+	"strength": 65, "color": true, "masks": true,
+	"cpu_windows_enabled": false, "cpu_android_root": false
 }
 var bridge: Object = null
 var pending_android_start := false
@@ -24,6 +25,14 @@ var win_overlay_pid := -1
 var win_overlay_active := false
 var win_overlay_config := ""
 var win_overlay_idle := ""
+var win_cpu_config := ""
+var win_cpu_report := ""
+var win_cpu_pid := -1
+var win_cpu_path := ""
+var win_cpu_exe_dialog: FileDialog
+var win_cpu_launch_button: Button
+var cpu_root_button: Button
+var perf_status_label: Label
 var running := false
 var stage := 0
 var active_ms := 0.0
@@ -53,6 +62,7 @@ func _ready() -> void:
 	_build_ui()
 	if OS.get_name() == "Windows":
 		_launch_windows_overlay()
+		_setup_windows_cpu()
 	if bridge != null:
 		print("[OveruseController] Android native bridge loaded: ", bridge.getBridgeVersion())
 		_settings_changed()
@@ -100,6 +110,7 @@ func _process(delta: float) -> void:
 			save_counter = 0.0
 			if OS.get_name() == "Windows":
 				_write_windows_overlay_config()
+				_write_windows_cpu_config()
 			_refresh_view()
 			_save_state()
 	visual_counter += delta
@@ -158,11 +169,107 @@ func _windows_active_input() -> bool:
 	return idle_ms < 5 * 60 * 1000
 
 func _exit_tree() -> void:
+	if not win_cpu_config.is_empty():
+		var release = FileAccess.open(win_cpu_config, FileAccess.WRITE)
+		if release != null:
+			release.store_string("0 0 0 0\n")
+			release.close()
 	if not win_overlay_config.is_empty():
 		var file = FileAccess.open(win_overlay_config, FileAccess.WRITE)
 		if file != null:
 			file.store_string("0 0 0 0 0 0\n")
 			file.close()
+
+func _setup_windows_cpu() -> void:
+	win_cpu_config = ProjectSettings.globalize_path("user://desktop_cpu_limit.txt")
+	win_cpu_report = ProjectSettings.globalize_path("user://desktop_cpu_status.txt")
+	_write_windows_cpu_config()
+	win_cpu_exe_dialog = FileDialog.new()
+	win_cpu_exe_dialog.title = "CPU 사용량 제한할 프로그램 선택"
+	win_cpu_exe_dialog.file_mode = FileDialog.FILE_MODE_OPEN_FILE
+	win_cpu_exe_dialog.access = FileDialog.ACCESS_FILESYSTEM
+	win_cpu_exe_dialog.filters = PackedStringArray(["*.exe ; Windows executable"])
+	win_cpu_exe_dialog.file_selected.connect(_windows_cpu_target_selected)
+	add_child(win_cpu_exe_dialog)
+
+func _write_windows_cpu_config() -> void:
+	if win_cpu_config.is_empty():
+		return
+	var cfg = FileAccess.open(win_cpu_config, FileAccess.WRITE)
+	if cfg == null:
+		return
+	var is_paused: int = 1 if pause_until > Time.get_unix_time_from_system() else 0
+	cfg.store_string("%d %d %d %d\n" % [
+		int(running), stage, is_paused, int(settings["cpu_windows_enabled"])])
+	cfg.close()
+
+func _windows_cpu_target_selected(file: String) -> void:
+	if not file.to_lower().ends_with(".exe"):
+		return
+	win_cpu_path = file
+	if is_instance_valid(win_cpu_launch_button):
+		win_cpu_launch_button.text = "선택한 앱 CPU 제한 실행: " + file.get_file()
+		win_cpu_launch_button.disabled = false
+
+func _launch_selected_windows_cpu() -> void:
+	if not bool(settings["cpu_windows_enabled"]):
+		perf_status_label.text = "먼저 CPU 제한 기능을 켜줘."
+		return
+	if win_cpu_path.is_empty():
+		perf_status_label.text = "CPU 제한할 EXE 파일을 먼저 선택해 줘."
+		return
+	if win_cpu_pid > 0 and OS.is_process_running(win_cpu_pid):
+		perf_status_label.text = "선택한 프로그램의 CPU 제한 도우미가 이미 실행 중이야."
+		return
+	var helper: String = OS.get_executable_path().get_base_dir().path_join("OveruseCpuLimit-Win64.exe")
+	if not FileAccess.file_exists(helper):
+		perf_status_label.text = "CPU 제한 도우미 EXE가 없어. Win64 ZIP의 모든 파일을 같은 폴더에 풀어줘."
+		return
+	_write_windows_cpu_config()
+	win_cpu_pid = OS.create_process(helper,
+		PackedStringArray([win_cpu_config, win_cpu_report, str(OS.get_process_id()), win_cpu_path]), false)
+	perf_status_label.text = "CPU 제한 실행 요청됨 · " + win_cpu_path.get_file() if win_cpu_pid > 0 else "CPU 제한 실행 실패"
+
+func _confirm_root_cpu() -> void:
+	if bool(settings["cpu_android_root"]):
+		settings["cpu_android_root"] = false
+		_settings_changed()
+		return
+	var confirmation = ConfirmationDialog.new()
+	confirmation.title = "Android 루팅 CPU 제한 활성화"
+	confirmation.dialog_text = "루팅된 Android 기기 전체의 CPU 최대 클럭을 일시적으로 제한해.\n전화나 다른 앱의 성능에도 영향을 줄 수 있고, 기기별로 지원되지 않을 수 있어.\n기본값은 비활성화야. 15분 일시정지나 보호 종료 시 복원해.\n정말 활성화할까?"
+	add_child(confirmation)
+	confirmation.confirmed.connect(func() -> void:
+		settings["cpu_android_root"] = true
+		_settings_changed()
+		confirmation.queue_free()
+	)
+	confirmation.canceled.connect(func() -> void: confirmation.queue_free())
+	confirmation.popup_centered()
+
+func _update_performance_status() -> void:
+	if not is_instance_valid(perf_status_label):
+		return
+	if OS.get_name() == "Android":
+		if bridge == null:
+			perf_status_label.text = "Android 네이티브 플러그인 없음 · 성능 제한 불가능"
+		elif not bool(settings["cpu_android_root"]):
+			perf_status_label.text = "루팅 CPU 제한 꺼짐 · 일반 APK에서는 CPU 제한 불가"
+		else:
+			perf_status_label.text = "Android 루트 상태: " + str(bridge.getPerformanceStatus())
+		if is_instance_valid(cpu_root_button):
+			cpu_root_button.text = "루팅 CPU 제한 비활성화" if bool(settings["cpu_android_root"]) else "루팅 CPU 제한 활성화 (고급)"
+	elif OS.get_name() == "Windows":
+		if win_cpu_pid > 0 and OS.is_process_running(win_cpu_pid):
+			var state = "STARTING"
+			if FileAccess.file_exists(win_cpu_report):
+				var file = FileAccess.open(win_cpu_report, FileAccess.READ)
+				if file != null:
+					state = file.get_as_text().strip_edges()
+					file.close()
+			perf_status_label.text = "선택 프로그램: " + win_cpu_path.get_file() + " · " + state
+		else:
+			perf_status_label.text = "대기 중 · 선택한 프로그램을 직접 실행할 때만 제한해"
 
 func _set_running() -> void:
 	if OS.get_name() == "Android" and bridge == null:
@@ -274,6 +381,9 @@ func _settings_changed() -> void:
 		bridge.setConfig(int(settings["grace"]), int(settings["interval"]),
 			int(settings["recovery"]), int(settings["strength"]),
 			bool(settings["color"]), bool(settings["masks"]))
+		bridge.setRootCpuEnabled(bool(settings["cpu_android_root"]))
+	elif OS.get_name() == "Windows":
+		_write_windows_cpu_config()
 	elif stage == 0:
 		stage_at_ms = float(settings["grace"]) * 60000.0
 	_update_visuals()
@@ -323,6 +433,7 @@ func _refresh_view() -> void:
 	else:
 		info_label.text = "Windows 데스크톱 도우미 없음 · 이 창 안에서만 효과가 보여."
 	_update_visuals()
+	_update_performance_status()
 
 func _update_visuals() -> void:
 	if not is_instance_valid(overlay):
@@ -405,6 +516,31 @@ func _build_ui() -> void:
 	_add_toggle(content, "화면 가림 마스크", "masks")
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
 
+	content.add_child(_label("CPU 성능 제한", 22, WHITE, true))
+	if OS.get_name() == "Windows":
+		content.add_child(_label("선택한 프로그램만 Job Object로 제한해. 다른 프로그램은 건드리지 않아.", 13, MUTED))
+		_add_toggle(content, "선택 프로그램 CPU 제한 사용", "cpu_windows_enabled")
+		var choose_target = _button("제한할 EXE 파일 선택", false)
+		content.add_child(choose_target)
+		choose_target.pressed.connect(func() -> void:
+			if is_instance_valid(win_cpu_exe_dialog):
+				win_cpu_exe_dialog.popup_centered_ratio(0.85)
+		)
+		win_cpu_launch_button = _button("선택한 앱 CPU 제한 실행", true)
+		win_cpu_launch_button.disabled = true
+		content.add_child(win_cpu_launch_button)
+		win_cpu_launch_button.pressed.connect(_launch_selected_windows_cpu)
+		content.add_child(_label("단계별 CPU 상한: 100% / 90% / 80% / 70% / 60% / 50%. 기존 실행 중인 앱은 제한하지 않아.", 12, MUTED))
+	elif OS.get_name() == "Android":
+		content.add_child(_label("일반 Android APK는 CPU 클럭을 제어할 수 없어. 루팅 시에만 선택적으로 기기 전체 CPU 클럭을 제한해.", 13, WARNING))
+		cpu_root_button = _button("루팅 CPU 제한 활성화 (고급)", false)
+		content.add_child(cpu_root_button)
+		cpu_root_button.pressed.connect(_confirm_root_cpu)
+		content.add_child(_label("단계별 최대 클럭 상한: 100% / 95% / 90% / 85% / 80% / 75%. 지원 기기에서만 작동해.", 12, MUTED))
+	var perf_card = _card(content)
+	perf_status_label = _label("성능 제한 초기화 중...", 13, MUTED)
+	perf_card.add_child(perf_status_label)
+
 	content.add_child(_label("효과 테스트", 22, WHITE, true))
 	content.add_child(_label("Android에서는 단계 버튼을 누른 후 홈 화면으로 이동해서 확인해.", 13, MUTED))
 	var buttons = HBoxContainer.new()
@@ -423,7 +559,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.4.2 · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.6.0 · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE

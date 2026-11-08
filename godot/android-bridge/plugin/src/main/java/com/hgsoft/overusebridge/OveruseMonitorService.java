@@ -34,6 +34,7 @@ public final class OveruseMonitorService extends Service {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private WindowManager wm;
+    private RootCpuLimiter cpuLimiter;
     private TintOverlay overlay;
     private boolean alive;
     private int stage;
@@ -82,6 +83,10 @@ public final class OveruseMonitorService extends Service {
                 // and manufacturer overlay restrictions.
                 refreshOverlay();
                 save(true);
+                if (cpuLimiter != null) {
+                    cpuLimiter.update(alive, pauseUntil > System.currentTimeMillis(),
+                            screenInUse(), stage);
+                }
             }
             handler.postDelayed(this, 1000L);
         }
@@ -90,6 +95,7 @@ public final class OveruseMonitorService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences(OveruseBridge.PREFS, MODE_PRIVATE);
+        cpuLimiter = new RootCpuLimiter(this, prefs);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         stage = Math.max(0, Math.min(5, prefs.getInt("stage", 0)));
         activeMs = Math.max(0L, prefs.getLong("active_ms", 0L));
@@ -115,6 +121,7 @@ public final class OveruseMonitorService extends Service {
             stageAtMs = graceMs();
             pauseUntil = 0L;
             save(false);
+            if (cpuLimiter != null) cpuLimiter.restore();
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -135,6 +142,10 @@ public final class OveruseMonitorService extends Service {
         }
         refreshOverlay();
         save(true);
+        if (cpuLimiter != null) {
+            cpuLimiter.update(true, pauseUntil > System.currentTimeMillis(),
+                    screenInUse(), stage);
+        }
         notifyUpdated();
         return START_STICKY;
     }
@@ -315,6 +326,7 @@ public final class OveruseMonitorService extends Service {
         alive = false;
         handler.removeCallbacksAndMessages(null);
         clearOverlay();
+        if (cpuLimiter != null) cpuLimiter.stop();
         save(false);
         markOverlay("SERVICE_STOPPED");
         stopForeground(true);

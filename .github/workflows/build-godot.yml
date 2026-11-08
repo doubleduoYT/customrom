@@ -54,6 +54,8 @@ jobs:
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/godot-debug.keystore" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+      - name: Verify CPUFreq shell safety script
+        run: sh -n godot/android-bridge/plugin/src/main/assets/cpu_limit.sh
       - name: Build Android native overlay bridge (Godot plugin v2)
         shell: bash
         run: |
@@ -92,6 +94,12 @@ jobs:
             -lgdi32 -luser32 -lshell32
           test -s godot/build/OveruseOverlay-Win64.exe
           file godot/build/OveruseOverlay-Win64.exe
+      - name: Build Windows per-app CPU limiter
+        shell: bash
+        run: |
+          x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -mwindows             -static-libgcc -static-libstdc++ -D_WIN32_WINNT=0x0602             godot/windows-overlay/cpu_limiter.cpp -o godot/build/OveruseCpuLimit-Win64.exe             -lkernel32 -lshell32 -luser32
+          test -s godot/build/OveruseCpuLimit-Win64.exe
+          file godot/build/OveruseCpuLimit-Win64.exe
       - name: Export Android ARM64 APK
         shell: bash
         run: |
@@ -106,17 +114,19 @@ jobs:
           with zipfile.ZipFile(apk) as z:
               dex=b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
               manifest=z.read("AndroidManifest.xml")
-          for symbol in (b"OveruseBridge", b"OveruseMonitorService", b"getOverlayStatus"):
+          for symbol in (b"OveruseBridge", b"OveruseMonitorService", b"RootCpuLimiter", b"getPerformanceStatus", b"getOverlayStatus"):
               assert symbol in dex, f"Missing Android native class/method: {symbol}"
           for symbol in ("SYSTEM_ALERT_WINDOW", "OveruseMonitorService", "org.godotengine.plugin.v2.OveruseBridge"):
               assert symbol.encode("utf-16le") in manifest, f"Missing manifest declaration: {symbol}"
-          print("Verified: native bridge, foreground service, and overlay permissions are packaged")
+          with zipfile.ZipFile(apk) as z:
+              assert any(name.endswith("cpu_limit.sh") for name in z.namelist()), "Missing root CPUFreq script"
+          print("Verified: native bridge, system overlay, optional root CPUFreq helper are packaged")
           PY
       - name: Pack Windows
         shell: bash
         run: |
           cd godot/build
-          zip -9 OveruseController-Win64.zip OveruseController-Win64.exe OveruseOverlay-Win64.exe
+          zip -9 OveruseController-Win64.zip OveruseController-Win64.exe OveruseOverlay-Win64.exe OveruseCpuLimit-Win64.exe
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
