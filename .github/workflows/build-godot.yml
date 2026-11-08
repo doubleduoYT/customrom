@@ -65,6 +65,15 @@ jobs:
           cp godot/android-bridge/plugin/build/outputs/aar/plugin-debug.aar godot/addons/OveruseBridge/bin/debug/OveruseBridge-debug.aar
       - name: Import Godot project
         run: godot --headless --editor --path godot --quit
+      - name: Smoke test Godot project logic
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path godot --quit-after 5 2>&1 | tee /tmp/overuse-godot-smoke.log
+          if grep -E 'SCRIPT ERROR|Parse Error' /tmp/overuse-godot-smoke.log; then
+            echo "Godot script error detected"
+            exit 1
+          fi
       - name: Export Windows x64
         shell: bash
         run: |
@@ -76,6 +85,21 @@ jobs:
         run: |
           godot --headless --path godot --install-android-build-template --export-debug "Android" "build/OveruseController-Android.apk"
           test -s godot/build/OveruseController-Android.apk
+      - name: Verify native Android system-overlay integration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          apk="godot/build/OveruseController-Android.apk"
+          with zipfile.ZipFile(apk) as z:
+              dex=b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
+              manifest=z.read("AndroidManifest.xml")
+          for symbol in (b"OveruseBridge", b"OveruseMonitorService", b"getOverlayStatus"):
+              assert symbol in dex, f"Missing Android native class/method: {symbol}"
+          for symbol in ("SYSTEM_ALERT_WINDOW", "OveruseMonitorService", "org.godotengine.plugin.v2.OveruseBridge"):
+              assert symbol.encode("utf-16le") in manifest, f"Missing manifest declaration: {symbol}"
+          print("Verified: native bridge, foreground service, and overlay permissions are packaged")
+          PY
       - name: Pack Windows
         shell: bash
         run: |

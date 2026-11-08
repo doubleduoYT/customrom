@@ -61,8 +61,10 @@ public class OveruseBridge extends GodotPlugin {
             } else {
                 activity.startService(intent);
             }
-        } catch (RuntimeException ignored) {
-            // If Android rejects a background launch, the user can retry from foreground.
+        } catch (RuntimeException error) {
+            prefs().edit().putString("overlay_status",
+                    "START_ERROR_" + error.getClass().getSimpleName()).apply();
+            android.util.Log.e("OveruseController", "Native monitor action rejected: " + action, error);
         }
     }
 
@@ -84,6 +86,19 @@ public class OveruseBridge extends GodotPlugin {
                 .putBoolean("masks", masks)
                 .apply();
         if (isRunning()) send("REFRESH", -1);
+    }
+
+    @UsedByGodot
+    public String getOverlayStatus() {
+        SharedPreferences p = prefs();
+        if (!p.getBoolean("running", false))
+            return p.getString("overlay_status", "SERVICE_STOPPED");
+        return p.getString("overlay_status", "SERVICE_STARTING");
+    }
+
+    @UsedByGodot
+    public String getBridgeVersion() {
+        return "0.4.1-android-v2";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }

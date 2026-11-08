@@ -20,6 +20,7 @@ import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.View;
 import android.view.WindowManager;
 
@@ -76,9 +77,11 @@ public final class OveruseMonitorService extends Service {
                     }
                 }
             }
-            if (++ticks % 4 == 0) {
+            if (++ticks % 2 == 0) {
+                // Recheck after lock/unlock, app switching, permission changes,
+                // and manufacturer overlay restrictions.
+                refreshOverlay();
                 save(true);
-                if (overlay != null) overlay.invalidate();
             }
             handler.postDelayed(this, 1000L);
         }
@@ -166,17 +169,39 @@ public final class OveruseMonitorService extends Service {
                 .apply();
     }
 
+    private void markOverlay(String state) {
+        prefs.edit().putString("overlay_status", state).apply();
+    }
+
     private void refreshOverlay() {
-        boolean permitted = Build.VERSION.SDK_INT < 23 || Settings.canDrawOverlays(this);
-        boolean show = stage > 0 && pauseUntil <= System.currentTimeMillis()
-                && permitted && screenInUse();
-        if (!show) {
+        if (stage <= 0) {
             clearOverlay();
+            markOverlay("WAITING_STAGE");
+            return;
+        }
+        if (pauseUntil > System.currentTimeMillis()) {
+            clearOverlay();
+            markOverlay("PAUSED");
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this)) {
+            clearOverlay();
+            markOverlay("NEED_OVERLAY_PERMISSION");
+            return;
+        }
+        if (!screenInUse()) {
+            clearOverlay();
+            markOverlay("SCREEN_LOCKED");
+            return;
+        }
+        if (wm == null) {
+            clearOverlay();
+            markOverlay("NO_WINDOW_MANAGER");
             return;
         }
         try {
             if (overlay == null) {
-                overlay = new TintOverlay(this);
+                TintOverlay candidate = new TintOverlay(this);
                 int type = Build.VERSION.SDK_INT >= 26
                         ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
                         : WindowManager.LayoutParams.TYPE_SYSTEM_ALERT;
@@ -186,13 +211,19 @@ public final class OveruseMonitorService extends Service {
                         type,
                         WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
                                 | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
+                                | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                         PixelFormat.TRANSLUCENT);
-                wm.addView(overlay, params);
+                wm.addView(candidate, params);
+                overlay = candidate;
+                Log.i("OveruseController", "System-wide touch-through overlay attached");
             }
             overlay.invalidate();
+            markOverlay("VISIBLE_SYSTEM_OVERLAY");
         } catch (RuntimeException error) {
+            Log.e("OveruseController", "Failed to attach system overlay", error);
             clearOverlay();
+            markOverlay("ERROR_" + error.getClass().getSimpleName());
         }
     }
 
@@ -225,7 +256,7 @@ public final class OveruseMonitorService extends Service {
                         Color.rgb(93, 72, 51)
                 };
                 int color = palette[random.nextInt(palette.length)];
-                int alpha = Math.min(68, Math.round((8 + stage * 11) * intensity / 100f));
+                int alpha = Math.min(125, Math.round((25 + stage * 26) * intensity / 100f));
                 canvas.drawColor(Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color)));
             }
             if (prefs.getBoolean("masks", true)) {
@@ -285,6 +316,7 @@ public final class OveruseMonitorService extends Service {
         handler.removeCallbacksAndMessages(null);
         clearOverlay();
         save(false);
+        markOverlay("SERVICE_STOPPED");
         stopForeground(true);
         super.onDestroy();
     }

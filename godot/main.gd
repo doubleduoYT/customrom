@@ -19,6 +19,7 @@ var settings = {
 	"strength": 65, "color": true, "masks": true
 }
 var bridge: Object = null
+var pending_android_start := false
 var running := false
 var stage := 0
 var active_ms := 0.0
@@ -47,13 +48,20 @@ func _ready() -> void:
 		bridge = Engine.get_singleton("OveruseBridge")
 	_build_ui()
 	if bridge != null:
+		print("[OveruseController] Android native bridge loaded: ", bridge.getBridgeVersion())
 		_settings_changed()
 		_read_native_state()
+	elif OS.get_name() == "Android":
+		push_warning("[OveruseController] Android native bridge was NOT registered. System overlay cannot run.")
 	_refresh_view()
 	set_process(true)
 
 func _process(delta: float) -> void:
 	if bridge != null:
+		# When returning from Android's overlay permission settings, start the monitor.
+		if pending_android_start and bool(bridge.hasOverlayPermission()):
+			pending_android_start = false
+			bridge.startMonitor()
 		# Java foreground service stays active while the Godot app is in the background.
 		save_counter += delta
 		if save_counter >= 0.5:
@@ -101,14 +109,19 @@ func _read_native_state() -> void:
 	stage_at_ms = float(bridge.getNextStageMs())
 
 func _set_running() -> void:
+	if OS.get_name() == "Android" and bridge == null:
+		info_label.text = "오류: Android 네이티브 브리지가 로드되지 않았어. 앱 바깥 효과를 사용할 수 없어."
+		return
 	if bridge != null:
 		if running:
 			bridge.stopMonitor()
 		elif bool(bridge.hasOverlayPermission()):
 			bridge.startMonitor()
 		else:
+			pending_android_start = true
 			bridge.requestOverlayPermission()
-			info_label.text = "Android 설정에서 '다른 앱 위에 표시'를 허용한 후 시작해 줘."
+			info_label.text = "Android 설정에서 '다른 앱 위에 표시'를 허용해 줘. 돌아오면 자동으로 시작돼."
+			return
 		_read_native_state()
 	else:
 		running = not running
@@ -147,12 +160,16 @@ func _change_stage(new_stage: int) -> void:
 	_update_visuals()
 
 func _preview(level: int) -> void:
+	if OS.get_name() == "Android" and bridge == null:
+		info_label.text = "오류: Android 네이티브 브리지 연결 실패. 시스템 오버레이 테스트를 실행할 수 없어."
+		return
 	if bridge != null:
 		if not bool(bridge.hasOverlayPermission()):
 			bridge.requestOverlayPermission()
 			return
 		bridge.previewStage(level)
 		_read_native_state()
+		info_label.text = "네이티브 미리보기 요청 완료. 홈 버튼을 눌러 앱 바깥에서도 표시되는지 확인해 줘."
 	else:
 		running = true
 		_change_stage(level)
@@ -228,15 +245,33 @@ func _refresh_view() -> void:
 	pause_button.disabled = not running
 	pause_button.text = "보호 계속하기" if paused else "15분 일시정지"
 	if bridge != null:
-		info_label.text = "Android 네이티브 모드 · 다른 앱 위 효과 지원" if bool(bridge.hasOverlayPermission()) else "오버레이 권한이 필요해. '보호 시작'을 눌러 허용해 줘."
+		var native_state: String = str(bridge.getOverlayStatus())
+		if not bool(bridge.hasOverlayPermission()):
+			info_label.text = "권한 없음: '보호 시작'을 누르고 다른 앱 위에 표시를 허용해 줘."
+		else:
+			match native_state:
+				"VISIBLE_SYSTEM_OVERLAY":
+					info_label.text = "✓ 시스템 오버레이 활성화됨 · 홈 화면과 다른 앱에서도 표시돼."
+				"WAITING_STAGE":
+					info_label.text = "✓ 서비스 실행 중 · 3단계 테스트를 누르고 홈으로 이동해 봐."
+				"PAUSED":
+					info_label.text = "일시정지 중 · 화면 효과를 숨겼어."
+				"SCREEN_LOCKED":
+					info_label.text = "화면 잠금 상태 · 잠금 해제 후 자동으로 표시돼."
+				_:
+					info_label.text = "Android 서비스 상태: " + native_state
+	elif OS.get_name() == "Android":
+		info_label.text = "⚠ 네이티브 브리지 인식 실패 · 앱 밖 효과가 작동하지 않아."
 	else:
-		info_label.text = "Windows 시뮬레이션 · 이 창이 활성화된 동안 사용 시간 측정"
+		info_label.text = "Windows 데모 모드 · 이 창 안에서만 효과를 보여 줘."
 	_update_visuals()
 
 func _update_visuals() -> void:
 	if not is_instance_valid(overlay):
 		return
-	var visible_fx = running and stage > 0 and pause_until <= Time.get_unix_time_from_system()
+	# Android must use the real OS overlay. Do not disguise a missing native
+	# plugin by showing an app-only tint over the Godot window.
+	var visible_fx = OS.get_name() != "Android" and running and stage > 0 and pause_until <= Time.get_unix_time_from_system()
 	var strength = float(settings["strength"]) / 100.0
 	overlay.visible = visible_fx and bool(settings["color"]) and strength > 0.0
 	if overlay.visible:
@@ -313,6 +348,7 @@ func _build_ui() -> void:
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
 
 	content.add_child(_label("효과 테스트", 22, WHITE, true))
+	content.add_child(_label("Android에서는 단계 버튼을 누른 후 홈 화면으로 이동해서 확인해.", 13, MUTED))
 	var buttons = HBoxContainer.new()
 	buttons.add_theme_constant_override("separation", 8)
 	content.add_child(buttons)
