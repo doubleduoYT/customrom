@@ -32,6 +32,13 @@ jobs:
           unzip -q /tmp/export.tpz -d /tmp/godot-export
           cp -a /tmp/godot-export/templates/. "$HOME/.local/share/godot/export_templates/$VERSION.stable/"
           godot --version
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
       - name: Configure Android SDK and debug signing
         shell: bash
         run: |
@@ -47,19 +54,15 @@ jobs:
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/godot-debug.keystore" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
           echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
-      - name: Configure Godot Editor SDK paths
+      - name: Build Android native overlay bridge (Godot plugin v2)
         shell: bash
         run: |
-          cat > /tmp/godot_ci_settings.gd <<'GD'
-          extends SceneTree
-          func _initialize() -> void:
-              var editor_settings = EditorInterface.get_editor_settings()
-              editor_settings.set_setting("export/android/android_sdk_path", OS.get_environment("ANDROID_HOME"))
-              editor_settings.set_setting("export/android/java_sdk_path", OS.get_environment("JAVA_HOME"))
-              editor_settings.save()
-              quit()
-          GD
-          godot --headless --editor --path godot --script /tmp/godot_ci_settings.gd
+          set -euxo pipefail
+          cd godot/android-bridge
+          gradle :plugin:assembleDebug --no-daemon
+          cd ../..
+          mkdir -p godot/addons/OveruseBridge/bin/debug
+          cp godot/android-bridge/plugin/build/outputs/aar/plugin-debug.aar godot/addons/OveruseBridge/bin/debug/OveruseBridge-debug.aar
       - name: Import Godot project
         run: godot --headless --editor --path godot --quit
       - name: Export Windows x64
@@ -71,7 +74,7 @@ jobs:
       - name: Export Android ARM64 APK
         shell: bash
         run: |
-          godot --headless --path godot --export-debug "Android" "build/OveruseController-Android.apk"
+          godot --headless --path godot --install-android-build-template --export-debug "Android" "build/OveruseController-Android.apk"
           test -s godot/build/OveruseController-Android.apk
       - name: Pack Windows
         shell: bash
@@ -100,3 +103,6 @@ jobs:
             godot/main.gd
             godot/export_presets.cfg
             godot/README.md
+            godot/android-bridge/**
+            godot/addons/OveruseBridge/plugin.cfg
+            godot/addons/OveruseBridge/export_plugin.gd

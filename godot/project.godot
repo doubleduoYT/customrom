@@ -26,3 +26,6 @@ environment/defaults/default_clear_color=Color(0.04, 0.065, 0.11, 1)
 
 [gui]
 theme/default_font_size=16
+
+[editor_plugins]
+enabled=PackedStringArray("res://addons/OveruseBridge/plugin.cfg")

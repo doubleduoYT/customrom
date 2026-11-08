@@ -43,9 +43,12 @@ func _ready() -> void:
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	get_viewport().get_window().min_size = Vector2i(380, 560) if OS.get_name() == "Windows" else Vector2i.ZERO
 	_load_state()
-	if OS.has_feature("android") and Engine.has_singleton("OveruseBridge"):
+	if OS.get_name() == "Android" and Engine.has_singleton("OveruseBridge"):
 		bridge = Engine.get_singleton("OveruseBridge")
 	_build_ui()
+	if bridge != null:
+		_settings_changed()
+		_read_native_state()
 	_refresh_view()
 	set_process(true)
 
