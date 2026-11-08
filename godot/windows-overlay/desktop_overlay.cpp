@@ -29,7 +29,8 @@ LRESULT CALLBACK OverlayWindowProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         HDC dc = BeginPaint(hwnd, &ps);
         RECT rc;
         GetClientRect(hwnd, &rc);
-        HBRUSH bg = CreateSolidBrush(g_color ? g_palette[g_stage] : RGB(0, 0, 0));
+        // Color-keyed background enables mask-only mode without darkening the entire desktop.
+        HBRUSH bg = CreateSolidBrush(g_color ? g_palette[g_stage] : RGB(1, 2, 3));
         FillRect(dc, &rc, bg);
         DeleteObject(bg);
         if (g_masks) {
@@ -114,6 +115,8 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     bool visible = false;
     int prior_stage = -1;
     int prior_alpha = -1;
+    bool prior_color = false;
+    bool prior_masks = false;
 
     // The helper never captures pixels or records keyboard/mouse contents.
     // Only Windows idle duration is shared with the Godot app.
@@ -146,13 +149,15 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
                     visible = true;
                 }
                 if (alpha != prior_alpha) {
-                    SetLayeredWindowAttributes(g_hwnd, RGB(0,0,0),
-                                               static_cast<BYTE>(alpha), LWA_ALPHA);
+                    SetLayeredWindowAttributes(g_hwnd, RGB(1,2,3),
+                                               static_cast<BYTE>(alpha), LWA_ALPHA | LWA_COLORKEY);
                     prior_alpha = alpha;
                 }
-                if (g_stage != prior_stage) {
+                if (g_stage != prior_stage || g_color != prior_color || g_masks != prior_masks) {
                     InvalidateRect(g_hwnd, nullptr, TRUE);
                     prior_stage = g_stage;
+                    prior_color = g_color;
+                    prior_masks = g_masks;
                 }
                 SetWindowPos(g_hwnd, HWND_TOPMOST, x, y, width, height,
                              SWP_NOACTIVATE | SWP_SHOWWINDOW);

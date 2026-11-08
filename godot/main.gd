@@ -423,7 +423,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.4 · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.4.2 · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
