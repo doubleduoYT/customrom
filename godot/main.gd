@@ -20,6 +20,10 @@ var settings = {
 }
 var bridge: Object = null
 var pending_android_start := false
+var win_overlay_pid := -1
+var win_overlay_active := false
+var win_overlay_config := ""
+var win_overlay_idle := ""
 var running := false
 var stage := 0
 var active_ms := 0.0
@@ -47,6 +51,8 @@ func _ready() -> void:
 	if OS.get_name() == "Android" and Engine.has_singleton("OveruseBridge"):
 		bridge = Engine.get_singleton("OveruseBridge")
 	_build_ui()
+	if OS.get_name() == "Windows":
+		_launch_windows_overlay()
 	if bridge != null:
 		print("[OveruseController] Android native bridge loaded: ", bridge.getBridgeVersion())
 		_settings_changed()
@@ -71,7 +77,7 @@ func _process(delta: float) -> void:
 	else:
 		if running and Time.get_unix_time_from_system() >= pause_until:
 			var elapsed_ms = minf(delta * 1000.0, 10000.0)
-			if DisplayServer.window_is_focused():
+			if DisplayServer.window_is_focused() or _windows_active_input():
 				active_ms += elapsed_ms
 				recovery_ms = 0.0
 				if stage == 0 and active_ms >= float(settings["grace"]) * 60000.0:
@@ -92,6 +98,8 @@ func _process(delta: float) -> void:
 		save_counter += delta
 		if save_counter >= 0.5:
 			save_counter = 0.0
+			if OS.get_name() == "Windows":
+				_write_windows_overlay_config()
 			_refresh_view()
 			_save_state()
 	visual_counter += delta
@@ -107,6 +115,54 @@ func _read_native_state() -> void:
 	active_ms = float(bridge.getActiveMs())
 	pause_until = float(bridge.getPausedUntil()) / 1000.0
 	stage_at_ms = float(bridge.getNextStageMs())
+
+func _launch_windows_overlay() -> void:
+	var helper_path: String = OS.get_executable_path().get_base_dir().path_join("OveruseOverlay-Win64.exe")
+	if not FileAccess.file_exists(helper_path):
+		push_warning("[OveruseController] Windows overlay companion missing: " + helper_path)
+		return
+	win_overlay_config = ProjectSettings.globalize_path("user://desktop_overlay.txt")
+	win_overlay_idle = ProjectSettings.globalize_path("user://desktop_idle.txt")
+	_write_windows_overlay_config()
+	win_overlay_pid = OS.create_process(helper_path,
+		PackedStringArray([win_overlay_config, win_overlay_idle, str(OS.get_process_id())]), false)
+	win_overlay_active = win_overlay_pid > 0
+	if not win_overlay_active:
+		push_warning("[OveruseController] Could not launch the desktop overlay helper.")
+
+func _write_windows_overlay_config() -> void:
+	if win_overlay_config.is_empty():
+		return
+	var file = FileAccess.open(win_overlay_config, FileAccess.WRITE)
+	if file == null:
+		return
+	var paused: int = 1 if running and pause_until > Time.get_unix_time_from_system() else 0
+	file.store_string("%d %d %d %d %d %d\n" % [
+		int(running), stage, int(settings["strength"]),
+		int(settings["color"]), int(settings["masks"]), paused])
+	file.close()
+
+func _windows_active_input() -> bool:
+	if not win_overlay_active:
+		return false
+	if not OS.is_process_running(win_overlay_pid):
+		win_overlay_active = false
+		return false
+	if not FileAccess.file_exists(win_overlay_idle):
+		return false
+	var file = FileAccess.open(win_overlay_idle, FileAccess.READ)
+	if file == null:
+		return false
+	var idle_ms: int = int(file.get_as_text().strip_edges())
+	file.close()
+	return idle_ms < 5 * 60 * 1000
+
+func _exit_tree() -> void:
+	if not win_overlay_config.is_empty():
+		var file = FileAccess.open(win_overlay_config, FileAccess.WRITE)
+		if file != null:
+			file.store_string("0 0 0 0 0 0\n")
+			file.close()
 
 func _set_running() -> void:
 	if OS.get_name() == "Android" and bridge == null:
@@ -262,8 +318,10 @@ func _refresh_view() -> void:
 					info_label.text = "Android 서비스 상태: " + native_state
 	elif OS.get_name() == "Android":
 		info_label.text = "⚠ 네이티브 브리지 인식 실패 · 앱 밖 효과가 작동하지 않아."
+	elif win_overlay_active:
+		info_label.text = "✓ Windows 데스크톱 오버레이 실행 중 · 다른 프로그램에도 적용돼."
 	else:
-		info_label.text = "Windows 데모 모드 · 이 창 안에서만 효과를 보여 줘."
+		info_label.text = "Windows 데스크톱 도우미 없음 · 이 창 안에서만 효과가 보여."
 	_update_visuals()
 
 func _update_visuals() -> void:
@@ -271,7 +329,7 @@ func _update_visuals() -> void:
 		return
 	# Android must use the real OS overlay. Do not disguise a missing native
 	# plugin by showing an app-only tint over the Godot window.
-	var visible_fx = OS.get_name() != "Android" and running and stage > 0 and pause_until <= Time.get_unix_time_from_system()
+	var visible_fx = OS.get_name() != "Android" and not win_overlay_active and running and stage > 0 and pause_until <= Time.get_unix_time_from_system()
 	var strength = float(settings["strength"]) / 100.0
 	overlay.visible = visible_fx and bool(settings["color"]) and strength > 0.0
 	if overlay.visible:

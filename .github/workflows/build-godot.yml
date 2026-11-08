@@ -80,6 +80,18 @@ jobs:
           mkdir -p godot/build
           godot --headless --path godot --export-release "Windows Desktop" "build/OveruseController-Win64.exe"
           test -s godot/build/OveruseController-Win64.exe
+      - name: Build Windows desktop-wide click-through overlay
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-mingw-w64-x86-64
+          x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -mwindows \
+            -static-libgcc -static-libstdc++ -D_WIN32_WINNT=0x0601 \
+            godot/windows-overlay/desktop_overlay.cpp -o godot/build/OveruseOverlay-Win64.exe \
+            -lgdi32 -luser32 -lshell32
+          test -s godot/build/OveruseOverlay-Win64.exe
+          file godot/build/OveruseOverlay-Win64.exe
       - name: Export Android ARM64 APK
         shell: bash
         run: |
@@ -104,7 +116,7 @@ jobs:
         shell: bash
         run: |
           cd godot/build
-          zip -9 OveruseController-Win64.zip OveruseController-Win64.exe
+          zip -9 OveruseController-Win64.zip OveruseController-Win64.exe OveruseOverlay-Win64.exe
       - name: Upload Android APK
         uses: actions/upload-artifact@v4
         with:
@@ -128,5 +140,6 @@ jobs:
             godot/export_presets.cfg
             godot/README.md
             godot/android-bridge/**
+            godot/windows-overlay/**
             godot/addons/OveruseBridge/plugin.cfg
             godot/addons/OveruseBridge/export_plugin.gd
