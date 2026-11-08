@@ -341,8 +341,9 @@ public final class MainActivity extends Activity {
 
         int grace = clamp(prefs.getInt(OveruseService.KEY_GRACE, 10), 1, 30);
         int interval = clamp(prefs.getInt(OveruseService.KEY_INTERVAL, 2), 1, 15);
-        long until = (stage == 0 ? grace * 60000L :
-                (grace + stage * interval) * 60000L) - elapsed;
+        long nextStageMs = prefs.getLong(OveruseService.KEY_NEXT_STAGE_MS,
+                (grace + stage * interval) * 60000L);
+        long until = (stage == 0 ? grace * 60000L : nextStageMs) - elapsed;
         nextText.setText(stage >= 5 ? "최고 단계에 도달했어" :
                 paused ? "일시정지 중에는 사용 시간이 늘지 않아" :
                 "다음 단계까지 약 " + Math.max(0L, (until + 59999L) / 60000L) + "분");

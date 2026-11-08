@@ -38,6 +38,7 @@ public final class OveruseService extends Service {
     public static final String KEY_RUNNING = "running";
     public static final String KEY_STAGE = "stage";
     public static final String KEY_ACTIVE_MS = "active_ms";
+    public static final String KEY_NEXT_STAGE_MS = "next_stage_ms";
     public static final String KEY_PAUSED_UNTIL = "paused_until";
     public static final String KEY_GRACE = "grace_minutes";
     public static final String KEY_INTERVAL = "interval_minutes";
@@ -89,7 +90,8 @@ public final class OveruseService extends Service {
         stage = clamp(prefs.getInt(KEY_STAGE, 0), 0, MAX_STAGE);
         activeMs = Math.max(0L, prefs.getLong(KEY_ACTIVE_MS, 0L));
         pausedUntil = prefs.getLong(KEY_PAUSED_UNTIL, 0L);
-        nextStageAt = getNextStageAt();
+        nextStageAt = Math.max(activeMs + 1000L,
+                prefs.getLong(KEY_NEXT_STAGE_MS, getNextStageAt()));
         lastTick = SystemClock.elapsedRealtime();
         createChannel();
         startForeground(FOREGROUND_ID, makeNotification());
@@ -167,6 +169,9 @@ public final class OveruseService extends Service {
                     if (stage == 0) {
                         activeMs = 0L;
                         nextStageAt = graceMs();
+                    } else {
+                        // Do not immediately regain the level that was just recovered.
+                        nextStageAt = activeMs + intervalMs();
                     }
                 }
             }
@@ -272,6 +277,7 @@ public final class OveruseService extends Service {
         prefs.edit().putBoolean(KEY_RUNNING, running)
                 .putInt(KEY_STAGE, stage)
                 .putLong(KEY_ACTIVE_MS, activeMs)
+                .putLong(KEY_NEXT_STAGE_MS, nextStageAt)
                 .putLong(KEY_PAUSED_UNTIL, pausedUntil)
                 .apply();
     }
