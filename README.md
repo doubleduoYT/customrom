@@ -1,48 +1,48 @@
-# Overuse Controller
+# Overuse Controller v0.3.0
 
-디지털 과의존 완화용 시스템 앱 프로토타입이다. 앱을 차단하지 않고, 오래 사용할수록 화면 위에 터치가 통과되는 시각적 방해 효과를 단계적으로 올린다.
+Android 스마트폰 사용 시간에 따라 화면 위에 **터치를 통과하는** 오버레이 효과를 표시하는 디지털 웰빙 앱.
 
-## 동작
+## v0.3.0 변경 사항
+- 일반 APK 설치 지원 (TWRP/루팅/시스템 파티션 수정 불필요)
+- 새로운 한국어 대시보드: 현재 단계, 사용 시간, 다음 단계
+- 화면 사용 시간: 잠금 해제된 화면이 실제로 켜진 시간을 집계
+- 0~5단계 유지: 기본 10분 후 1단계, 이후 2분마다 상승
+- 화면을 끄거나 잠그면 기본 1분마다 단계 회복
+- 첫 단계·상승 간격·회복 간격 설정 저장
+- 화면 효과의 강도 / 색상 / 마스크를 개별 설정
+- 갑작스러운 0.5초 무작위 고채도 플래시 대신 부드러운 2초 색조 변경
+- 앱 및 알림에서 보호 중지 / 15분 일시정지 / 계속하기
+- 1/3/5단계 미리보기와 초기화
+- 서비스 종료 시 화면 오버레이 제거
+- 최신 Android 권한 및 포그라운드 서비스 정책에 맞춘 매니페스트
 
-- 화면 켠 뒤 10분: 기본 상태 유지
-- 10분 이후: 1단계 진입 및 알림
-- 이후 2분마다 단계 상승
-- 최대 5단계
-- 화면을 꺼두면 1분마다 단계 하락
-- 단계 상승 알림: `단계가 높아졌습니다\n현재 N단계입니다`
-- 단계 하락 알림: `단계가 낮아졌습니다\n현재 N단계입니다`
-- 단계가 높아질수록:
-  - 터치가 통과되는 화면 가림 오버레이가 추가됨
-  - 전체 바탕색이 0.5초마다 랜덤 변경됨
-  - 오버레이 이동/회전/색 변화가 저FPS처럼 보여 불편함을 줌
-  - 시스템 애니메이션 scale을 올려서 동작이 느려진 듯한 느낌을 줌
+## APK 빌드
+1. GitHub Actions → **Build Overuse Controller APK**
+2. **Run workflow** 또는 해당 브랜치에 변경사항 push
+3. 성공한 작업의 **Artifacts**에서 OveruseController-v0.3.0-APK 다운로드
+4. ZIP 안의 app-debug.apk를 폰에 설치
 
-## Android Studio 없이 빌드하기
+app/build.gradle은 minSdk 23 / targetSdk 35 / Java 17로 설정돼 있어.
 
-이 저장소를 GitHub에 올린 뒤 `Actions` 탭에서 **Build Overuse Controller Patch** 워크플로를 실행하면 된다.
+## 권한
+- **다른 앱 위에 표시**: 화면 효과에 필수 (설정에서 직접 허용)
+- **알림**: Android 13 이상에서 상태 및 일시정지 버튼 표시
+- **포그라운드 서비스**: 앱을 열고 보호 시작을 눌렀을 때만 작동
 
-결과물은 artifact로 제공된다.
+앱은 통화·긴급전화 앱을 강제로 차단하지 않고, 오버레이는 터치를 가로채지 않아.
 
-- `app-debug.apk`
-- `overuse-controller-patch.zip`
+## 제한 사항
+- 일반 Android 앱 권한으로 실제 타 앱의 FPS, 애니메이션 배율, 화면 픽셀을 수정할 수는 없어. 오버레이 자체의 연출만 변경해.
+- 멀티 윈도우, 권한 제한, 제조사 배터리 최적화에 따라 효과가 제한될 수 있어.
+- 사용 시간은 앱별 사용 분석이 아니라 화면이 켜져 있고 잠금이 해제된 시간을 합산해.
+- APK는 테스트용 디버그 빌드이며 Play 스토어 정식 서명 빌드가 아니야.
+- 시스템에 이전 v0.2 TWRP 패치를 설치했다면, 설치 전 중복 서비스 및 같은 패키지 서명 충돌 여부를 확인해.
+- 예전 v0.2가 시스템 애니메이션 설정을 이미 변경한 환경이라면 Android 개발자 옵션에서 애니메이션 배율을 수동으로 1x로 되돌려 줘.
 
-## TWRP 적용
+## 주요 코드
+- MainActivity.java: 설정 및 대시보드
+- OveruseService.java: 타이머, 단계, 포그라운드 알림, 일시정지
+- OveruseOverlayView.java: 터치 통과형 색상/마스크 오버레이
 
-1. `overuse-controller-patch.zip`을 폰 저장소나 SD 카드에 복사
-2. TWRP 진입
-3. 가능하면 `System`, `Boot`, `Data` 백업
-4. `Install` → `overuse-controller-patch.zip` 선택
-5. Swipe to flash
-6. Reboot System
-7. 부팅 후 앱 아이콘에서 한 번 실행해서 오버레이/설정 권한을 확인
-
-## 주의
-
-이건 SystemUI.apk 자체를 직접 수정하는 방식이 아니라 `/system/priv-app`에 시스템 앱을 추가하는 방식이다. SystemUI 리소스 리빌드 문제를 피하면서 시연 가능한 효과를 얻기 위한 MVP다.
-
-
-## v0.2 test/fix notes
-
-- Fixed stage changes so overlay/notifications still work even if WRITE_SETTINGS is not granted.
-- Added in-app test buttons for stage 1, stage 3, stage 5, and reset stage 0.
-- Normal mode still uses 10 minutes of screen-on time before stage 1.
+## 기존 시스템 패치
+과거에 사용하던 build_patch.sh, build_patch.ps1, SystemUI.apk, services.jar 및 관련 파일은 **레거시 참고용으로만** 남아 있어. 새로운 Actions 파이프라인은 일반 APK만 출력해.
