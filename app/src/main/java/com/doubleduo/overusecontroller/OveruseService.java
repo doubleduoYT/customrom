@@ -1,237 +1,354 @@
 package com.doubleduo.overusecontroller;
 
+import android.app.KeyguardManager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
-import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.view.WindowManager;
 
-public class OveruseService extends Service {
-    private static final String CHANNEL_ID = "overuse_mitigation";
-    private static final int NOTIFICATION_ID = 2401;
-    private static final int MAX_STAGE = 5;
-    private static final long GRACE_MS = 10L * 60L * 1000L;
-    private static final long STAGE_UP_INTERVAL_MS = 2L * 60L * 1000L;
-    private static final long RECOVERY_INTERVAL_MS = 1L * 60L * 1000L;
-    private static final long VISUAL_TICK_MS = 500L;
-    public static final String ACTION_SET_STAGE = "com.doubleduo.overusecontroller.SET_STAGE";
+/**
+ * Foreground-only usage controller for regular, non-root Android installs.
+ *
+ * Measures interactive, unlocked screen time. Overlay never receives touches.
+ * Does NOT modify global animations, block apps, or request privileged settings.
+ */
+public final class OveruseService extends Service {
+    public static final String PREF_FILE = "overuse_v03";
+    public static final String ACTION_START = "com.doubleduo.overusecontroller.START";
+    public static final String ACTION_STOP = "com.doubleduo.overusecontroller.STOP";
+    public static final String ACTION_PAUSE = "com.doubleduo.overusecontroller.PAUSE";
+    public static final String ACTION_RESUME = "com.doubleduo.overusecontroller.RESUME";
+    public static final String ACTION_RESET = "com.doubleduo.overusecontroller.RESET";
+    public static final String ACTION_PREVIEW = "com.doubleduo.overusecontroller.PREVIEW";
+    public static final String ACTION_REFRESH = "com.doubleduo.overusecontroller.REFRESH";
     public static final String EXTRA_STAGE = "stage";
+    public static final String KEY_RUNNING = "running";
+    public static final String KEY_STAGE = "stage";
+    public static final String KEY_ACTIVE_MS = "active_ms";
+    public static final String KEY_PAUSED_UNTIL = "paused_until";
+    public static final String KEY_GRACE = "grace_minutes";
+    public static final String KEY_INTERVAL = "interval_minutes";
+    public static final String KEY_RECOVERY = "recovery_minutes";
+    public static final String KEY_INTENSITY = "intensity";
+    public static final String KEY_COLOR = "effect_color";
+    public static final String KEY_MASKS = "effect_masks";
 
-    private final Handler handler = new Handler();
+    private static final String CHANNEL = "overuse_controller_v03";
+    private static final int FOREGROUND_ID = 2401;
+    private static final int MAX_STAGE = 5;
+    private static final long MINUTE = 60_000L;
+    private static final long PAUSE_MS = 15L * MINUTE;
+
+    private final Handler handler = new Handler(Looper.getMainLooper());
+    private SharedPreferences prefs;
     private WindowManager windowManager;
-    private OveruseOverlayView overlayView;
-    private boolean overlayAdded;
-    private boolean screenOn = true;
-    private long screenOnAccumulatedMs = 0L;
-    private long screenOffAccumulatedMs = 0L;
-    private long lastTickTimeMs;
-    private long nextStageUpAtMs = GRACE_MS;
-    private int stage = 0;
+    private OveruseOverlayView overlay;
+    private long lastTick;
+    private long activeMs;
+    private long recoveryMs;
+    private long pausedUntil;
+    private long nextStageAt;
+    private int stage;
+    private int ticks;
+    private boolean started;
 
-    public static void start(Context context) {
-        Intent i = new Intent(context, OveruseService.class);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
-        else context.startService(i);
+    public static void send(Context context, String action) {
+        send(context, action, -1);
     }
 
-    public static void setStageForTest(Context context, int stage) {
-        Intent i = new Intent(context, OveruseService.class);
-        i.setAction(ACTION_SET_STAGE);
-        i.putExtra(EXTRA_STAGE, stage);
-        if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i);
-        else context.startService(i);
+    public static void send(Context context, String action, int stage) {
+        Intent intent = new Intent(context, OveruseService.class);
+        intent.setAction(action);
+        if (stage >= 0) intent.putExtra(EXTRA_STAGE, stage);
+        if (Build.VERSION.SDK_INT >= 26 &&
+                (ACTION_START.equals(action) || ACTION_PREVIEW.equals(action))) {
+            context.startForegroundService(intent);
+        } else {
+            context.startService(intent);
+        }
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
-        createChannelIfNeeded();
-        startForeground(NOTIFICATION_ID, buildNotification("Overuse mitigation running", "Current stage: 0"));
+        prefs = getSharedPreferences(PREF_FILE, MODE_PRIVATE);
         windowManager = (WindowManager) getSystemService(WINDOW_SERVICE);
-        registerScreenReceiver();
-        lastTickTimeMs = System.currentTimeMillis();
-        handler.post(tickRunnable);
-        handler.post(visualRunnable);
+        stage = clamp(prefs.getInt(KEY_STAGE, 0), 0, MAX_STAGE);
+        activeMs = Math.max(0L, prefs.getLong(KEY_ACTIVE_MS, 0L));
+        pausedUntil = prefs.getLong(KEY_PAUSED_UNTIL, 0L);
+        nextStageAt = getNextStageAt();
+        lastTick = SystemClock.elapsedRealtime();
+        createChannel();
+        startForeground(FOREGROUND_ID, makeNotification());
+        started = true;
+        handler.postDelayed(tick, 1000L);
+        handler.postDelayed(visualTick, 2000L);
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        if (intent != null && ACTION_SET_STAGE.equals(intent.getAction())) {
-            int requested = intent.getIntExtra(EXTRA_STAGE, stage);
-            setStage(requested, requested > stage);
-            if (requested <= 0) {
-                screenOnAccumulatedMs = 0L;
-                screenOffAccumulatedMs = 0L;
-                nextStageUpAtMs = GRACE_MS;
-            }
+        String action = intent == null ? ACTION_START : intent.getAction();
+        if (action == null) action = ACTION_START;
+        if (ACTION_STOP.equals(action)) {
+            stage = 0;
+            activeMs = 0L;
+            recoveryMs = 0L;
+            pausedUntil = 0L;
+            save(false);
+            stopSelf();
+            return START_NOT_STICKY;
         }
+        if (ACTION_PAUSE.equals(action)) {
+            pausedUntil = System.currentTimeMillis() + PAUSE_MS;
+            refreshOverlay();
+        } else if (ACTION_RESUME.equals(action)) {
+            pausedUntil = 0L;
+            refreshOverlay();
+        } else if (ACTION_RESET.equals(action)) {
+            stage = 0;
+            activeMs = 0L;
+            recoveryMs = 0L;
+            nextStageAt = getNextStageAt();
+            refreshOverlay();
+        } else if (ACTION_PREVIEW.equals(action)) {
+            stage = clamp(intent.getIntExtra(EXTRA_STAGE, 0), 0, MAX_STAGE);
+            if (stage == 0) {
+                activeMs = 0L;
+                nextStageAt = getNextStageAt();
+            } else {
+                nextStageAt = activeMs + intervalMs();
+            }
+            refreshOverlay();
+        } else if (ACTION_REFRESH.equals(action) || ACTION_START.equals(action)) {
+            nextStageAt = Math.max(activeMs + 1000L, getNextStageAt());
+            refreshOverlay();
+        }
+        save(true);
+        updateForeground();
         return START_STICKY;
     }
 
-    @Override
-    public IBinder onBind(Intent intent) { return null; }
-
-    private final Runnable tickRunnable = new Runnable() {
+    private final Runnable tick = new Runnable() {
         @Override public void run() {
-            long now = System.currentTimeMillis();
-            long delta = Math.max(0, now - lastTickTimeMs);
-            lastTickTimeMs = now;
-
-            if (screenOn) {
-                screenOnAccumulatedMs += delta;
-                screenOffAccumulatedMs = 0L;
-                if (stage == 0 && screenOnAccumulatedMs >= GRACE_MS) {
-                    setStage(1, true);
-                    nextStageUpAtMs = screenOnAccumulatedMs + STAGE_UP_INTERVAL_MS;
-                } else if (stage > 0 && stage < MAX_STAGE && screenOnAccumulatedMs >= nextStageUpAtMs) {
-                    setStage(stage + 1, true);
-                    nextStageUpAtMs = screenOnAccumulatedMs + STAGE_UP_INTERVAL_MS;
+            if (!started) return;
+            long now = SystemClock.elapsedRealtime();
+            long delta = Math.min(10_000L, Math.max(0L, now - lastTick));
+            lastTick = now;
+            if (isPaused()) {
+                // While paused, neither escalation nor recovery consumes time.
+            } else if (isScreenBeingUsed()) {
+                activeMs += delta;
+                recoveryMs = 0L;
+                if (stage == 0 && activeMs >= graceMs()) {
+                    changeStage(1);
+                    nextStageAt = activeMs + intervalMs();
+                } else if (stage > 0 && stage < MAX_STAGE && activeMs >= nextStageAt) {
+                    changeStage(stage + 1);
+                    nextStageAt = activeMs + intervalMs();
                 }
             } else {
-                screenOffAccumulatedMs += delta;
-                if (stage > 0 && screenOffAccumulatedMs >= RECOVERY_INTERVAL_MS) {
-                    screenOffAccumulatedMs = 0L;
-                    setStage(stage - 1, false);
+                recoveryMs += delta;
+                if (stage > 0 && recoveryMs >= recoveryIntervalMs()) {
+                    recoveryMs -= recoveryIntervalMs();
+                    changeStage(stage - 1);
                     if (stage == 0) {
-                        screenOnAccumulatedMs = 0L;
-                        nextStageUpAtMs = GRACE_MS;
+                        activeMs = 0L;
+                        nextStageAt = graceMs();
                     }
                 }
             }
+            if (++ticks % 5 == 0) save(true);
             handler.postDelayed(this, 1000L);
         }
     };
 
-    private final Runnable visualRunnable = new Runnable() {
+    private final Runnable visualTick = new Runnable() {
         @Override public void run() {
-            if (overlayView != null) overlayView.tickVisuals();
-            handler.postDelayed(this, VISUAL_TICK_MS);
+            if (!started) return;
+            if (overlay != null && !isPaused()) overlay.updateVisuals();
+            handler.postDelayed(this, 2000L);
         }
     };
 
-    private void setStage(int newStage, boolean increased) {
-        int clamped = Math.max(0, Math.min(MAX_STAGE, newStage));
-        if (clamped == stage) return;
-        stage = clamped;
-        try {
-            Settings.System.putInt(getContentResolver(), "overuse_mitigation_stage", stage);
-        } catch (Throwable ignored) {
-            // Overlay and notifications should still work even when WRITE_SETTINGS is not granted.
-        }
-        applyOverlayStage();
-        applyAnimationScaleForStage();
-        String title = increased ? "단계가 높아졌습니다" : "단계가 낮아졌습니다";
-        String text = "현재 " + stage + "단계입니다";
-        notifyEvent(title, text);
+    private boolean isScreenBeingUsed() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        KeyguardManager km = (KeyguardManager) getSystemService(KEYGUARD_SERVICE);
+        return pm != null && pm.isInteractive() &&
+                (km == null || !km.isKeyguardLocked());
     }
 
-    private void applyOverlayStage() {
-        if (stage <= 0) {
-            if (overlayView != null) overlayView.setStage(0);
+    private boolean isPaused() {
+        if (pausedUntil == 0L) return false;
+        if (System.currentTimeMillis() < pausedUntil) return true;
+        pausedUntil = 0L;
+        refreshOverlay();
+        updateForeground();
+        save(true);
+        return false;
+    }
+
+    private long graceMs() {
+        return clamp(prefs.getInt(KEY_GRACE, 10), 1, 120) * MINUTE;
+    }
+
+    private long intervalMs() {
+        return clamp(prefs.getInt(KEY_INTERVAL, 2), 1, 30) * MINUTE;
+    }
+
+    private long recoveryIntervalMs() {
+        return clamp(prefs.getInt(KEY_RECOVERY, 1), 1, 30) * MINUTE;
+    }
+
+    private long getNextStageAt() {
+        long grace = graceMs();
+        if (stage <= 0) return grace;
+        long interval = intervalMs();
+        return Math.max(activeMs + 1000L, grace + stage * interval);
+    }
+
+    private void changeStage(int newStage) {
+        newStage = clamp(newStage, 0, MAX_STAGE);
+        if (stage == newStage) return;
+        stage = newStage;
+        refreshOverlay();
+        updateForeground();
+        save(true);
+    }
+
+    private void refreshOverlay() {
+        if (stage == 0 || pausedUntil > System.currentTimeMillis() ||
+                (Build.VERSION.SDK_INT >= 23 && !Settings.canDrawOverlays(this))) {
+            removeOverlay();
             return;
         }
-        ensureOverlay();
-        overlayView.setStage(stage);
-    }
-
-    private void ensureOverlay() {
-        if (overlayAdded || windowManager == null) return;
-        overlayView = new OveruseOverlayView(this);
-        int type = Build.VERSION.SDK_INT >= 26
-                ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-                : WindowManager.LayoutParams.TYPE_SYSTEM_ALERT;
-        WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
-                WindowManager.LayoutParams.MATCH_PARENT,
-                WindowManager.LayoutParams.MATCH_PARENT,
-                type,
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
-                        | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-                        | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
-                PixelFormat.TRANSLUCENT);
         try {
-            windowManager.addView(overlayView, lp);
-            overlayAdded = true;
-        } catch (Throwable ignored) {
-            overlayAdded = false;
-        }
-    }
-
-    private void applyAnimationScaleForStage() {
-        float scale;
-        switch (stage) {
-            case 0: scale = 1.0f; break;
-            case 1: scale = 1.15f; break;
-            case 2: scale = 1.35f; break;
-            case 3: scale = 1.65f; break;
-            case 4: scale = 2.0f; break;
-            default: scale = 2.5f; break;
-        }
-        try {
-            Settings.Global.putFloat(getContentResolver(), Settings.Global.WINDOW_ANIMATION_SCALE, scale);
-            Settings.Global.putFloat(getContentResolver(), Settings.Global.TRANSITION_ANIMATION_SCALE, scale);
-            Settings.Global.putFloat(getContentResolver(), Settings.Global.ANIMATOR_DURATION_SCALE, scale);
-        } catch (Throwable ignored) {
-            // Some ROMs may block WRITE_SETTINGS for non-platform signed apps.
-        }
-    }
-
-    private void registerScreenReceiver() {
-        IntentFilter f = new IntentFilter();
-        f.addAction(Intent.ACTION_SCREEN_ON);
-        f.addAction(Intent.ACTION_SCREEN_OFF);
-        registerReceiver(new BroadcastReceiver() {
-            @Override public void onReceive(Context context, Intent intent) {
-                String action = intent.getAction();
-                if (Intent.ACTION_SCREEN_ON.equals(action)) {
-                    screenOn = true;
-                    lastTickTimeMs = System.currentTimeMillis();
-                } else if (Intent.ACTION_SCREEN_OFF.equals(action)) {
-                    screenOn = false;
-                    screenOffAccumulatedMs = 0L;
-                    lastTickTimeMs = System.currentTimeMillis();
-                }
+            if (overlay == null) {
+                overlay = new OveruseOverlayView(this);
+                int windowType = Build.VERSION.SDK_INT >= 26
+                        ? WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                        : WindowManager.LayoutParams.TYPE_SYSTEM_ALERT;
+                WindowManager.LayoutParams params = new WindowManager.LayoutParams(
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        WindowManager.LayoutParams.MATCH_PARENT,
+                        windowType,
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+                                | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                        PixelFormat.TRANSLUCENT);
+                if (windowManager != null) windowManager.addView(overlay, params);
             }
-        }, f);
-    }
-
-    private void createChannelIfNeeded() {
-        if (Build.VERSION.SDK_INT >= 26) {
-            NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Overuse Mitigation", NotificationManager.IMPORTANCE_DEFAULT);
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (nm != null) nm.createNotificationChannel(ch);
+            if (overlay != null) overlay.configure(
+                    stage, clamp(prefs.getInt(KEY_INTENSITY, 65), 0, 100),
+                    prefs.getBoolean(KEY_COLOR, true),
+                    prefs.getBoolean(KEY_MASKS, true));
+        } catch (RuntimeException e) {
+            removeOverlay();
         }
     }
 
-    private Notification buildNotification(String title, String text) {
-        Intent openIntent = new Intent(this, MainActivity.class);
-        PendingIntent pi = PendingIntent.getActivity(this, 0, openIntent, PendingIntent.FLAG_UPDATE_CURRENT);
-        Notification.Builder b = Build.VERSION.SDK_INT >= 26
-                ? new Notification.Builder(this, CHANNEL_ID)
-                : new Notification.Builder(this);
-        return b.setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle(title)
-                .setContentText(text)
-                .setStyle(new Notification.BigTextStyle().bigText(text))
-                .setContentIntent(pi)
-                .setOngoing(true)
-                .build();
+    private void removeOverlay() {
+        if (overlay != null) {
+            try {
+                if (windowManager != null) windowManager.removeViewImmediate(overlay);
+            } catch (RuntimeException ignored) { }
+            overlay = null;
+        }
     }
 
-    private void notifyEvent(String title, String text) {
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm != null) nm.notify(NOTIFICATION_ID + 1, buildNotification(title, text));
-        startForeground(NOTIFICATION_ID, buildNotification("Overuse mitigation active", "Current stage: " + stage));
+    private void save(boolean running) {
+        prefs.edit().putBoolean(KEY_RUNNING, running)
+                .putInt(KEY_STAGE, stage)
+                .putLong(KEY_ACTIVE_MS, activeMs)
+                .putLong(KEY_PAUSED_UNTIL, pausedUntil)
+                .apply();
+    }
+
+    private void createChannel() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel channel = new NotificationChannel(
+                    CHANNEL, "Overuse Controller", NotificationManager.IMPORTANCE_LOW);
+            channel.setDescription("사용 시간과 단계, 일시정지를 표시합니다");
+            NotificationManager manager = (NotificationManager)
+                    getSystemService(NOTIFICATION_SERVICE);
+            if (manager != null) manager.createNotificationChannel(channel);
+        }
+    }
+
+    private PendingIntent serviceAction(String action, int requestCode) {
+        Intent intent = new Intent(this, OveruseService.class);
+        intent.setAction(action);
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+        return PendingIntent.getService(this, requestCode, intent, flags);
+    }
+
+    private Notification makeNotification() {
+        boolean paused = pausedUntil > System.currentTimeMillis();
+        int flags = PendingIntent.FLAG_UPDATE_CURRENT;
+        if (Build.VERSION.SDK_INT >= 23) flags |= PendingIntent.FLAG_IMMUTABLE;
+        PendingIntent launch = PendingIntent.getActivity(this, 0,
+                new Intent(this, MainActivity.class), flags);
+
+        Notification.Builder builder = Build.VERSION.SDK_INT >= 26
+                ? new Notification.Builder(this, CHANNEL)
+                : new Notification.Builder(this);
+        builder.setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
+                .setContentTitle(paused ? "Overuse Controller · 일시정지" :
+                        "Overuse Controller · " + stage + "/5 단계")
+                .setContentText(paused ? "15분 휴식 중 · 탭하여 설정 열기" :
+                        "화면 사용 시간 " + formatMinutes(activeMs))
+                .setContentIntent(launch)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setShowWhen(false)
+                .addAction(android.R.drawable.ic_media_pause,
+                        paused ? "계속하기" : "15분 쉬기",
+                        serviceAction(paused ? ACTION_RESUME : ACTION_PAUSE, 1))
+                .addAction(android.R.drawable.ic_menu_close_clear_cancel,
+                        "종료", serviceAction(ACTION_STOP, 2));
+        return builder.build();
+    }
+
+    private String formatMinutes(long ms) {
+        long minutes = ms / MINUTE;
+        return (minutes / 60) + "시간 " + (minutes % 60) + "분";
+    }
+
+    private void updateForeground() {
+        if (started) {
+            try {
+                NotificationManager manager = (NotificationManager)
+                        getSystemService(NOTIFICATION_SERVICE);
+                if (manager != null) manager.notify(FOREGROUND_ID, makeNotification());
+            } catch (RuntimeException ignored) { }
+        }
+    }
+
+    private static int clamp(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
+    @Override public IBinder onBind(Intent intent) { return null; }
+
+    @Override
+    public void onDestroy() {
+        started = false;
+        handler.removeCallbacksAndMessages(null);
+        removeOverlay();
+        stopForeground(true);
+        super.onDestroy();
     }
 }
