@@ -1,0 +1,155 @@
+name: Build Godot Overuse Android and Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/godot-overuse-controller
+    paths:
+      - 'godot/**'
+      - '.github/workflows/build-godot.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Godot 4.5.2 and matching export templates
+        shell: bash
+        run: |
+          set -euxo pipefail
+          VERSION=4.5.2
+          BASE="https://github.com/godotengine/godot/releases/download/$VERSION-stable"
+          curl --retry 5 -fL "$BASE/Godot_v$VERSION-stable_linux.x86_64.zip" -o /tmp/godot.zip
+          curl --retry 5 -fL "$BASE/Godot_v$VERSION-stable_export_templates.tpz" -o /tmp/export.tpz
+          unzip -q /tmp/godot.zip -d /tmp/godot-bin
+          sudo install -m 755 "/tmp/godot-bin/Godot_v$VERSION-stable_linux.x86_64" /usr/local/bin/godot
+          mkdir -p "$HOME/.local/share/godot/export_templates/$VERSION.stable" /tmp/godot-export
+          unzip -q /tmp/export.tpz -d /tmp/godot-export
+          cp -a /tmp/godot-export/templates/. "$HOME/.local/share/godot/export_templates/$VERSION.stable/"
+          godot --version
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Configure Android SDK and debug signing
+        shell: bash
+        run: |
+          set -euxo pipefail
+          export ANDROID_HOME="$ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -path '*/bin/sdkmanager' -type f | sort -V | tail -1)"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/godot-debug.keystore" \
+            -alias androiddebugkey -storepass android -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -dname "CN=Android Debug,O=HGSoft,C=KR"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$RUNNER_TEMP/godot-debug.keystore" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey" >> "$GITHUB_ENV"
+          echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android" >> "$GITHUB_ENV"
+      - name: Verify CPUFreq shell safety script
+        run: sh -n godot/android-bridge/plugin/src/main/assets/cpu_limit.sh
+      - name: Build Android native overlay bridge (Godot plugin v2)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd godot/android-bridge
+          gradle :plugin:assembleDebug --no-daemon
+          cd ../..
+          mkdir -p godot/addons/OveruseBridge/bin/debug
+          cp godot/android-bridge/plugin/build/outputs/aar/plugin-debug.aar godot/addons/OveruseBridge/bin/debug/OveruseBridge-debug.aar
+      - name: Import Godot project
+        run: godot --headless --editor --path godot --quit
+      - name: Smoke test Godot project logic
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path godot --quit-after 5 2>&1 | tee /tmp/overuse-godot-smoke.log
+          if grep -E 'SCRIPT ERROR|Parse Error' /tmp/overuse-godot-smoke.log; then
+            echo "Godot script error detected"
+            exit 1
+          fi
+      - name: Export Windows x64
+        shell: bash
+        run: |
+          mkdir -p godot/build
+          godot --headless --path godot --export-release "Windows Desktop" "build/OveruseController-Win64.exe"
+          test -s godot/build/OveruseController-Win64.exe
+      - name: Build Windows desktop-wide click-through overlay
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq g++-mingw-w64-x86-64
+          x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -mwindows \
+            -static-libgcc -static-libstdc++ -D_WIN32_WINNT=0x0601 \
+            godot/windows-overlay/desktop_overlay.cpp -o godot/build/OveruseOverlay-Win64.exe \
+            -lgdi32 -luser32 -lshell32
+          test -s godot/build/OveruseOverlay-Win64.exe
+          file godot/build/OveruseOverlay-Win64.exe
+      - name: Build Windows per-app CPU limiter
+        shell: bash
+        run: |
+          x86_64-w64-mingw32-g++ -O2 -std=c++17 -municode -mwindows             -static-libgcc -static-libstdc++ -D_WIN32_WINNT=0x0602             godot/windows-overlay/cpu_limiter.cpp -o godot/build/OveruseCpuLimit-Win64.exe             -lkernel32 -lshell32 -luser32
+          test -s godot/build/OveruseCpuLimit-Win64.exe
+          file godot/build/OveruseCpuLimit-Win64.exe
+      - name: Export Android ARM64 APK
+        shell: bash
+        run: |
+          godot --headless --path godot --install-android-build-template --export-debug "Android" "build/OveruseController-Android.apk"
+          test -s godot/build/OveruseController-Android.apk
+      - name: Verify native Android system-overlay integration
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import zipfile
+          apk="godot/build/OveruseController-Android.apk"
+          with zipfile.ZipFile(apk) as z:
+              dex=b"".join(z.read(n) for n in z.namelist() if n.endswith(".dex"))
+              manifest=z.read("AndroidManifest.xml")
+          for symbol in (b"OveruseBridge", b"OveruseMonitorService", b"RootCpuLimiter", b"getPerformanceStatus", b"getOverlayStatus"):
+              assert symbol in dex, f"Missing Android native class/method: {symbol}"
+          for symbol in ("SYSTEM_ALERT_WINDOW", "OveruseMonitorService", "org.godotengine.plugin.v2.OveruseBridge"):
+              assert symbol.encode("utf-16le") in manifest, f"Missing manifest declaration: {symbol}"
+          with zipfile.ZipFile(apk) as z:
+              assert any(name.endswith("cpu_limit.sh") for name in z.namelist()), "Missing root CPUFreq script"
+          print("Verified: native bridge, system overlay, optional root CPUFreq helper are packaged")
+          PY
+      - name: Pack Windows
+        shell: bash
+        run: |
+          cd godot/build
+          zip -9 OveruseController-Win64.zip OveruseController-Win64.exe OveruseOverlay-Win64.exe OveruseCpuLimit-Win64.exe
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: OveruseController-Android-APK
+          path: godot/build/OveruseController-Android.apk
+          if-no-files-found: error
+      - name: Upload Windows x64
+        uses: actions/upload-artifact@v4
+        with:
+          name: OveruseController-Win64
+          path: godot/build/OveruseController-Win64.zip
+          if-no-files-found: error
+      - name: Upload Godot project
+        uses: actions/upload-artifact@v4
+        with:
+          name: OveruseController-Godot-Source
+          path: |
+            godot/project.godot
+            godot/main.tscn
+            godot/main.gd
+            godot/export_presets.cfg
+            godot/README.md
+            godot/android-bridge/**
+            godot/windows-overlay/**
+            godot/addons/OveruseBridge/plugin.cfg
+            godot/addons/OveruseBridge/export_plugin.gd
