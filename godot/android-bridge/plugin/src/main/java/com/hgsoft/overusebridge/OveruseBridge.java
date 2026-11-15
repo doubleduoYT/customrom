@@ -116,11 +116,17 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public void setSelectiveConfig(boolean enabled, String packages) {
-        prefs().edit()
+        SharedPreferences p = prefs();
+        String targets = AppSelectionPolicy.normalizedTargets(packages);
+        boolean policyChanged = p.getBoolean("selective_enabled", false) != enabled
+                || !p.getString("selected_packages", "").equals(targets);
+        p.edit()
                 .putBoolean("selective_enabled", enabled)
-                .putString("selected_packages", AppSelectionPolicy.normalizedTargets(packages))
+                .putString("selected_packages", targets)
                 .apply();
-        if (isRunning()) send("REFRESH", -1);
+        // Old all-device usage must never carry over to a new target list.
+        // RESET preserves the daily reporting counters, but resets stage/partial rest.
+        if (isRunning()) send(policyChanged ? "RESET" : "REFRESH", -1);
     }
 
     @UsedByGodot
