@@ -39,6 +39,7 @@ public final class OveruseMonitorService extends Service {
     private SharedPreferences prefs;
     private WindowManager wm;
     private RootCpuLimiter cpuLimiter;
+    private ForegroundAppMonitor appMonitor;
     private TintOverlay overlay;
     private boolean alive;
     private int stage;
@@ -66,7 +67,15 @@ public final class OveruseMonitorService extends Service {
             }
             if (pauseUntil == 0L) {
                 rollDailyCounters();
-                if (screenInUse()) {
+                boolean screenActive = screenInUse();
+                boolean selective = prefs.getBoolean("selective_enabled", false);
+                boolean inTarget = !selective || (screenActive && selectionAllowed());
+
+                // Without Usage Access, neither penalize the user nor simulate
+                // rest; temporarily freeze the stage and remove active effects.
+                if (selective && (appMonitor == null || !appMonitor.hasAccess())) {
+                    resetRestForPauseBoundary();
+                } else if (screenActive && inTarget) {
                     activeMs += delta;
                     todayActiveMs += delta;
                     recoveryMs = 0L;
@@ -78,8 +87,18 @@ public final class OveruseMonitorService extends Service {
                         setStage(stage + 1);
                     }
                 } else {
-                    todayRestMs += delta;
-                    restStreakMs += delta;
+                    // Off-target time recovers the selected-app stage, but is NOT
+                    // included in physical screen-off rest statistics.
+                    if (!screenActive) {
+                        todayRestMs += delta;
+                        restStreakMs += delta;
+                    } else {
+                        // Leaving a selected app is a break from that app, not
+                        // proof of physical rest. It can recover a normal stage,
+                        // but cannot earn the three-minute screen-off bonus.
+                        restStreakMs = 0L;
+                        restBonusAwarded = false;
+                    }
                     recoveryMs += delta;
                     if (stage > 0 && recoveryMs >= recoveryIntervalMs()) {
                         recoveryMs -= recoveryIntervalMs();
@@ -91,7 +110,6 @@ public final class OveruseMonitorService extends Service {
                             stageAtMs = activeMs + intervalMs();
                         }
                     }
-                    // Exactly one optional bonus after three continuous minutes of rest.
                     if (prefs.getBoolean("smart_recovery", false)
                             && !restBonusAwarded && restStreakMs >= SMART_BONUS_REST_MS) {
                         restBonusAwarded = true;
@@ -113,7 +131,7 @@ public final class OveruseMonitorService extends Service {
                 save(true);
                 if (cpuLimiter != null) {
                     cpuLimiter.update(alive, pauseUntil > System.currentTimeMillis(),
-                            screenInUse(), stage);
+                            screenInUse() && selectionAllowed(), stage);
                 }
             }
             handler.postDelayed(this, 1000L);
@@ -124,6 +142,7 @@ public final class OveruseMonitorService extends Service {
         super.onCreate();
         prefs = getSharedPreferences(OveruseBridge.PREFS, MODE_PRIVATE);
         cpuLimiter = new RootCpuLimiter(this, prefs);
+        appMonitor = new ForegroundAppMonitor(this, prefs);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         stage = Math.max(0, Math.min(5, prefs.getInt("stage", 0)));
         activeMs = Math.max(0L, prefs.getLong("active_ms", 0L));
@@ -185,7 +204,7 @@ public final class OveruseMonitorService extends Service {
         save(true);
         if (cpuLimiter != null) {
             cpuLimiter.update(true, pauseUntil > System.currentTimeMillis(),
-                    screenInUse(), stage);
+                    screenInUse() && selectionAllowed(), stage);
         }
         notifyUpdated();
         return START_STICKY;
@@ -243,6 +262,16 @@ public final class OveruseMonitorService extends Service {
                 .apply();
     }
 
+    private boolean selectionAllowed() {
+        if (appMonitor == null) return !prefs.getBoolean("selective_enabled", false);
+        boolean allowed = appMonitor.allowIntervention();
+        String newState = appMonitor.status();
+        if (!newState.equals(prefs.getString("selection_status", ""))) {
+            prefs.edit().putString("selection_status", newState).apply();
+        }
+        return allowed;
+    }
+
     private void markOverlay(String state) {
         prefs.edit().putString("overlay_status", state).apply();
     }
@@ -266,6 +295,11 @@ public final class OveruseMonitorService extends Service {
         if (!screenInUse()) {
             clearOverlay();
             markOverlay("SCREEN_LOCKED");
+            return;
+        }
+        if (!selectionAllowed()) {
+            clearOverlay();
+            markOverlay("SELECTIVE_" + appMonitor.status());
             return;
         }
         if (wm == null) {
