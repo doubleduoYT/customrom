@@ -18,7 +18,8 @@ const WINDOWS_INPUT_IDLE_GRACE_MS = 30000 # Ignore brief pauses while typing/rea
 var settings = {
 	"grace": 10, "interval": 2, "recovery": 1, "smart_recovery": false,
 	"strength": 65, "color": true, "masks": true,
-	"cpu_windows_enabled": false, "cpu_android_root": false
+	"cpu_windows_enabled": false, "cpu_android_root": false,
+	"selective_android": false, "selected_packages": ""
 }
 var bridge: Object = null
 var pending_android_start := false
@@ -52,6 +53,7 @@ var status_label: Label
 var stage_label: Label
 var active_label: Label
 var daily_label: Label
+var selective_status_label: Label
 var next_label: Label
 var info_label: Label
 var progress_bar: ProgressBar
@@ -447,6 +449,7 @@ func _save_state() -> void:
 func _settings_changed() -> void:
 	_save_state()
 	if bridge != null:
+		bridge.setSelectiveConfig(bool(settings["selective_android"]), str(settings["selected_packages"]))
 		bridge.setConfig(int(settings["grace"]), int(settings["interval"]),
 			int(settings["recovery"]), int(settings["strength"]),
 			bool(settings["color"]), bool(settings["masks"]), bool(settings["smart_recovery"]))
@@ -482,6 +485,19 @@ func _refresh_view() -> void:
 	pause_button.disabled = not running
 	pause_button.text = "보호 계속하기" if paused else "15분 일시정지"
 	if bridge != null:
+		if is_instance_valid(selective_status_label):
+			var policy_state: String = str(bridge.getSelectionStatus())
+			match policy_state:
+				"SELECTIVE_DISABLED":
+					selective_status_label.text = "선택형 개입 꺼짐 · 기존 전역 방식 사용"
+				"USAGE_ACCESS_REQUIRED":
+					selective_status_label.text = "사용기록 권한 없음 · 보호를 위해 화면 효과 일시 중단"
+				"TARGET_ACTIVE":
+					selective_status_label.text = "선택한 앱에서 개입 허용됨"
+				"NO_SELECTED_APPS":
+					selective_status_label.text = "대상 앱이 비어 있음 · 개입하지 않음"
+				_:
+					selective_status_label.text = "선택형 개입 상태: " + policy_state
 		var native_state: String = str(bridge.getOverlayStatus())
 		if not bool(bridge.hasOverlayPermission()):
 			info_label.text = "권한 없음: '보호 시작'을 누르고 다른 앱 위에 표시를 허용해 줘."
@@ -591,6 +607,37 @@ func _build_ui() -> void:
 	_add_toggle(content, "화면 가림 마스크", "masks")
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
 
+	if OS.get_name() == "Android":
+		content.add_child(_label("선택형 앱 개입 (v0.8.0 실험)", 22, WHITE, true))
+		content.add_child(_label("명시적으로 선택한 앱에서만 화면 효과를 적용해. 사용기록 권한이 없거나 현재 앱이 불명확하면 방해하지 않아.", 13, MUTED))
+		_add_toggle(content, "선택한 Android 앱에서만 개입", "selective_android")
+		var select_card = _card(content)
+		select_card.add_child(_label("대상 패키지명 (쉼표로 구분)", 14, WHITE, true))
+		var target_input = LineEdit.new()
+		target_input.placeholder_text = "예: com.example.game,com.example.social"
+		target_input.text = str(settings["selected_packages"])
+		target_input.select_all_on_focus = false
+		select_card.add_child(target_input)
+		var save_targets = _button("대상 앱 목록 저장", false)
+		select_card.add_child(save_targets)
+		save_targets.pressed.connect(func() -> void:
+			settings["selected_packages"] = target_input.text
+			_settings_changed()
+		)
+		target_input.text_submitted.connect(func(value: String) -> void:
+			settings["selected_packages"] = value
+			_settings_changed()
+		)
+		var grant_usage = _button("앱 사용기록 접근 권한 설정", false)
+		select_card.add_child(grant_usage)
+		grant_usage.pressed.connect(func() -> void:
+			if bridge != null:
+				bridge.requestUsageAccess()
+		)
+		selective_status_label = _label("선택형 개입 상태 확인 중...", 13, WARNING)
+		select_card.add_child(selective_status_label)
+		select_card.add_child(_label("본인 기기에서 직접 허용해야 해. 전화·설정·일부 시스템 앱은 항상 제외되고, 대상 목록은 기기 안에만 저장돼.", 12, MUTED))
+
 	content.add_child(_label("CPU 성능 제한", 22, WHITE, true))
 	if OS.get_name() == "Windows":
 		content.add_child(_label("선택한 프로그램만 Job Object로 제한해. 다른 프로그램은 건드리지 않아.", 13, MUTED))
@@ -634,7 +681,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.7.0 (Experimental) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.0 (Selective Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
