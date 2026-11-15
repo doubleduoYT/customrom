@@ -13,6 +13,7 @@ const MUTED = Color("#9eb1ca")
 const ACCENT = Color("#76baff")
 const WARNING = Color("#ffb36d")
 const MAX_STAGE = 5
+const WINDOWS_INPUT_IDLE_GRACE_MS = 30000 # Ignore brief pauses while typing/reading.
 
 var settings = {
 	"grace": 10, "interval": 2, "recovery": 1, "smart_recovery": false,
@@ -92,7 +93,7 @@ func _process(delta: float) -> void:
 		if running and Time.get_unix_time_from_system() >= pause_until:
 			_roll_daily_counters()
 			var elapsed_ms = minf(maxf(delta, 0.0) * 1000.0, 10000.0)
-			if DisplayServer.window_is_focused() or _windows_active_input():
+			if _is_active_usage():
 				active_ms += elapsed_ms
 				today_active_ms += elapsed_ms
 				recovery_ms = 0.0
@@ -183,20 +184,34 @@ func _write_windows_overlay_config() -> void:
 		int(settings["color"]), int(settings["masks"]), paused])
 	file.close()
 
+func _is_active_usage() -> bool:
+	if OS.get_name() == "Windows":
+		# Focusing the controller window is NOT proof of active use:
+		# a visible, untouched window should eventually count as rest.
+		return _windows_active_input()
+	return DisplayServer.window_is_focused()
+
 func _windows_active_input() -> bool:
+	# Fail closed: if the helper disappears or its idle sample is invalid,
+	# keep the last state classified as active instead of giving a false rest bonus.
 	if not win_overlay_active:
-		return false
+		return true
 	if not OS.is_process_running(win_overlay_pid):
 		win_overlay_active = false
-		return false
+		return true
 	if not FileAccess.file_exists(win_overlay_idle):
-		return false
+		return true
 	var file = FileAccess.open(win_overlay_idle, FileAccess.READ)
 	if file == null:
-		return false
-	var idle_ms: int = int(file.get_as_text().strip_edges())
+		return true
+	var raw_idle := file.get_as_text().strip_edges()
 	file.close()
-	return idle_ms < 5 * 60 * 1000
+	if not raw_idle.is_valid_int():
+		return true
+	var idle_ms: int = int(raw_idle)
+	if idle_ms < 0:
+		return true
+	return idle_ms < WINDOWS_INPUT_IDLE_GRACE_MS
 
 func _exit_tree() -> void:
 	if not win_cpu_config.is_empty():
@@ -339,12 +354,20 @@ func _set_pause() -> void:
 			bridge.pauseMonitor()
 		_read_native_state()
 	else:
+		# A manual pause/resume always terminates the previous continuous rest
+		# period. Time spent paused never contributes to the 3-minute bonus.
+		_recovery_pause_boundary()
 		if pause_until > Time.get_unix_time_from_system():
 			pause_until = 0.0
 		else:
 			pause_until = Time.get_unix_time_from_system() + 15.0 * 60.0
 	_save_state()
 	_refresh_view()
+
+func _recovery_pause_boundary() -> void:
+	recovery_ms = 0.0
+	rest_streak_ms = 0.0
+	rest_bonus_awarded = false
 
 func _change_stage(new_stage: int) -> void:
 	stage = clampi(new_stage, 0, MAX_STAGE)
