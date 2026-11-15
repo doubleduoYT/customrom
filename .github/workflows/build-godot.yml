@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - feature/godot-overuse-controller
+      - feature/smart-recovery-v0.7.0
     paths:
       - 'godot/**'
       - '.github/workflows/build-godot.yml'
