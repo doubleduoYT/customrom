@@ -77,6 +77,16 @@ jobs:
             echo "Godot script error detected"
             exit 1
           fi
+      - name: Test Smart Recovery policy (headless)
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path godot --script res://tests/smart_recovery_test.gd 2>&1 | tee /tmp/overuse-recovery-test.log
+          grep -q "failures: 0" /tmp/overuse-recovery-test.log
+          if grep -E 'SCRIPT ERROR|Parse Error|FAIL:' /tmp/overuse-recovery-test.log; then
+            echo "Recovery regression test failed"
+            exit 1
+          fi
       - name: Export Windows x64
         shell: bash
         run: |
