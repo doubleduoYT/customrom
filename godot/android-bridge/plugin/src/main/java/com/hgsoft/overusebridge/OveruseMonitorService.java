@@ -25,12 +25,16 @@ import android.view.View;
 import android.view.WindowManager;
 
 import java.util.Random;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 /** Android service for the Godot UI; runs only after a user presses Start. */
 public final class OveruseMonitorService extends Service {
     private static final int FOREGROUND_ID = 6014;
     private static final String CHANNEL_ID = "overuse_godot_monitor";
     private static final long MINUTE = 60000L;
+    private static final long SMART_BONUS_REST_MS = 3L * MINUTE;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private SharedPreferences prefs;
     private WindowManager wm;
@@ -40,6 +44,11 @@ public final class OveruseMonitorService extends Service {
     private int stage;
     private long activeMs;
     private long recoveryMs;
+    private long restStreakMs;
+    private boolean restBonusAwarded;
+    private String todayKey = "";
+    private long todayActiveMs;
+    private long todayRestMs;
     private long stageAtMs;
     private long pauseUntil;
     private long lastTick;
@@ -56,15 +65,21 @@ public final class OveruseMonitorService extends Service {
                 refreshOverlay();
             }
             if (pauseUntil == 0L) {
+                rollDailyCounters();
                 if (screenInUse()) {
                     activeMs += delta;
+                    todayActiveMs += delta;
                     recoveryMs = 0L;
+                    restStreakMs = 0L;
+                    restBonusAwarded = false;
                     if (stage == 0 && activeMs >= graceMs()) {
                         setStage(1);
                     } else if (stage > 0 && stage < 5 && activeMs >= stageAtMs) {
                         setStage(stage + 1);
                     }
                 } else {
+                    todayRestMs += delta;
+                    restStreakMs += delta;
                     recoveryMs += delta;
                     if (stage > 0 && recoveryMs >= recoveryIntervalMs()) {
                         recoveryMs -= recoveryIntervalMs();
@@ -74,6 +89,19 @@ public final class OveruseMonitorService extends Service {
                             stageAtMs = graceMs();
                         } else {
                             stageAtMs = activeMs + intervalMs();
+                        }
+                    }
+                    // Exactly one optional bonus after three continuous minutes of rest.
+                    if (prefs.getBoolean("smart_recovery", false)
+                            && !restBonusAwarded && restStreakMs >= SMART_BONUS_REST_MS) {
+                        restBonusAwarded = true;
+                        if (stage > 0) {
+                            setStage(stage - 1);
+                            if (stage == 0) {
+                                activeMs = 0L;
+                                recoveryMs = 0L;
+                                stageAtMs = graceMs();
+                            }
                         }
                     }
                 }
@@ -99,6 +127,13 @@ public final class OveruseMonitorService extends Service {
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         stage = Math.max(0, Math.min(5, prefs.getInt("stage", 0)));
         activeMs = Math.max(0L, prefs.getLong("active_ms", 0L));
+        recoveryMs = Math.max(0L, prefs.getLong("recovery_ms", 0L));
+        restStreakMs = Math.max(0L, prefs.getLong("rest_streak_ms", 0L));
+        restBonusAwarded = prefs.getBoolean("rest_bonus_awarded", false);
+        todayKey = prefs.getString("today_key", "");
+        todayActiveMs = prefs.getLong("today_active_ms", 0L);
+        todayRestMs = prefs.getLong("today_rest_ms", 0L);
+        rollDailyCounters();
         stageAtMs = prefs.getLong("stage_at_ms", graceMs());
         pauseUntil = prefs.getLong("pause_until", 0L);
         lastTick = SystemClock.elapsedRealtime();
@@ -118,6 +153,8 @@ public final class OveruseMonitorService extends Service {
             stage = 0;
             activeMs = 0L;
             recoveryMs = 0L;
+            restStreakMs = 0L;
+            restBonusAwarded = false;
             stageAtMs = graceMs();
             pauseUntil = 0L;
             save(false);
@@ -126,13 +163,17 @@ public final class OveruseMonitorService extends Service {
             return START_NOT_STICKY;
         }
         if ("PAUSE".equals(action)) {
+            resetRestForPauseBoundary();
             pauseUntil = System.currentTimeMillis() + 15L * MINUTE;
         } else if ("RESUME".equals(action)) {
+            resetRestForPauseBoundary();
             pauseUntil = 0L;
         } else if ("RESET".equals(action)) {
             stage = 0;
             activeMs = 0L;
             recoveryMs = 0L;
+            restStreakMs = 0L;
+            restBonusAwarded = false;
             stageAtMs = graceMs();
         } else if ("PREVIEW".equals(action)) {
             stage = Math.max(0, Math.min(5, intent.getIntExtra("stage", 0)));
@@ -148,6 +189,22 @@ public final class OveruseMonitorService extends Service {
         }
         notifyUpdated();
         return START_STICKY;
+    }
+
+    /** Pausing or resuming cannot carry a partial rest period into a new one. */
+    private void resetRestForPauseBoundary() {
+        recoveryMs = 0L;
+        restStreakMs = 0L;
+        restBonusAwarded = false;
+    }
+
+    private void rollDailyCounters() {
+        String key = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+        if (!key.equals(todayKey)) {
+            todayKey = key;
+            todayActiveMs = 0L;
+            todayRestMs = 0L;
+        }
     }
 
     private boolean screenInUse() {
@@ -175,6 +232,12 @@ public final class OveruseMonitorService extends Service {
                 .putBoolean("running", running)
                 .putInt("stage", stage)
                 .putLong("active_ms", activeMs)
+                .putLong("recovery_ms", recoveryMs)
+                .putLong("rest_streak_ms", restStreakMs)
+                .putBoolean("rest_bonus_awarded", restBonusAwarded)
+                .putString("today_key", todayKey)
+                .putLong("today_active_ms", todayActiveMs)
+                .putLong("today_rest_ms", todayRestMs)
                 .putLong("stage_at_ms", stageAtMs)
                 .putLong("pause_until", pauseUntil)
                 .apply();

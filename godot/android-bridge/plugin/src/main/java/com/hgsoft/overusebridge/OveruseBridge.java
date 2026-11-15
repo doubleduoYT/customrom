@@ -76,7 +76,7 @@ public class OveruseBridge extends GodotPlugin {
     @UsedByGodot public void previewStage(int stage) { send("PREVIEW", stage); }
 
     @UsedByGodot
-    public void setConfig(int grace, int interval, int recovery, int strength, boolean color, boolean masks) {
+    public void setConfig(int grace, int interval, int recovery, int strength, boolean color, boolean masks, boolean smartRecovery) {
         prefs().edit()
                 .putInt("grace", Math.max(1, Math.min(30, grace)))
                 .putInt("interval", Math.max(1, Math.min(15, interval)))
@@ -84,6 +84,7 @@ public class OveruseBridge extends GodotPlugin {
                 .putInt("strength", Math.max(0, Math.min(100, strength)))
                 .putBoolean("color", color)
                 .putBoolean("masks", masks)
+                .putBoolean("smart_recovery", smartRecovery)
                 .apply();
         if (isRunning()) send("REFRESH", -1);
     }
@@ -110,12 +111,14 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.6.0-android-cpufreq";
+        return "0.7.0-android-smart-recovery";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }
     @UsedByGodot public int getStage() { return prefs().getInt("stage", 0); }
     @UsedByGodot public long getActiveMs() { return prefs().getLong("active_ms", 0L); }
+    @UsedByGodot public long getTodayActiveMs() { return prefs().getLong("today_active_ms", 0L); }
+    @UsedByGodot public long getTodayRestMs() { return prefs().getLong("today_rest_ms", 0L); }
     @UsedByGodot public long getNextStageMs() { return prefs().getLong("stage_at_ms", 600000L); }
     @UsedByGodot public long getPausedUntil() { return prefs().getLong("pause_until", 0L); }
 }

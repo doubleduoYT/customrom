@@ -13,9 +13,10 @@ const MUTED = Color("#9eb1ca")
 const ACCENT = Color("#76baff")
 const WARNING = Color("#ffb36d")
 const MAX_STAGE = 5
+const WINDOWS_INPUT_IDLE_GRACE_MS = 30000 # Ignore brief pauses while typing/reading.
 
 var settings = {
-	"grace": 10, "interval": 2, "recovery": 1,
+	"grace": 10, "interval": 2, "recovery": 1, "smart_recovery": false,
 	"strength": 65, "color": true, "masks": true,
 	"cpu_windows_enabled": false, "cpu_android_root": false
 }
@@ -37,6 +38,11 @@ var running := false
 var stage := 0
 var active_ms := 0.0
 var recovery_ms := 0.0
+var rest_streak_ms := 0.0
+var rest_bonus_awarded := false
+var today_key := ""
+var today_active_ms := 0.0
+var today_rest_ms := 0.0
 var stage_at_ms := 600000.0
 var pause_until := 0.0
 var save_counter := 0.0
@@ -45,6 +51,7 @@ var visual_counter := 0.0
 var status_label: Label
 var stage_label: Label
 var active_label: Label
+var daily_label: Label
 var next_label: Label
 var info_label: Label
 var progress_bar: ProgressBar
@@ -74,11 +81,9 @@ func _ready() -> void:
 
 func _process(delta: float) -> void:
 	if bridge != null:
-		# When returning from Android's overlay permission settings, start the monitor.
 		if pending_android_start and bool(bridge.hasOverlayPermission()):
 			pending_android_start = false
 			bridge.startMonitor()
-		# Java foreground service stays active while the Godot app is in the background.
 		save_counter += delta
 		if save_counter >= 0.5:
 			save_counter = 0.0
@@ -86,25 +91,31 @@ func _process(delta: float) -> void:
 			_refresh_view()
 	else:
 		if running and Time.get_unix_time_from_system() >= pause_until:
-			var elapsed_ms = minf(delta * 1000.0, 10000.0)
-			if DisplayServer.window_is_focused() or _windows_active_input():
+			_roll_daily_counters()
+			var elapsed_ms = minf(maxf(delta, 0.0) * 1000.0, 10000.0)
+			if _is_active_usage():
 				active_ms += elapsed_ms
+				today_active_ms += elapsed_ms
 				recovery_ms = 0.0
+				rest_streak_ms = 0.0
+				rest_bonus_awarded = false
 				if stage == 0 and active_ms >= float(settings["grace"]) * 60000.0:
 					_change_stage(1)
 				elif stage > 0 and stage < MAX_STAGE and active_ms >= stage_at_ms:
 					_change_stage(stage + 1)
 			else:
+				today_rest_ms += elapsed_ms
+				rest_streak_ms += elapsed_ms
 				recovery_ms += elapsed_ms
 				var recovery_interval = float(settings["recovery"]) * 60000.0
 				if stage > 0 and recovery_ms >= recovery_interval:
 					recovery_ms -= recovery_interval
-					_change_stage(stage - 1)
-					if stage == 0:
-						active_ms = 0.0
-						stage_at_ms = float(settings["grace"]) * 60000.0
-					else:
-						stage_at_ms = active_ms + float(settings["interval"]) * 60000.0
+					_apply_recovery_step()
+				# Optional one-time bonus for 3 continuous minutes of rest.
+				if bool(settings["smart_recovery"]) and not rest_bonus_awarded and rest_streak_ms >= 180000.0:
+					rest_bonus_awarded = true
+					if stage > 0:
+						_apply_recovery_step()
 		save_counter += delta
 		if save_counter >= 0.5:
 			save_counter = 0.0
@@ -118,6 +129,24 @@ func _process(delta: float) -> void:
 		visual_counter = 0.0
 		_update_visuals()
 
+func _apply_recovery_step() -> void:
+	_change_stage(stage - 1)
+	if stage == 0:
+		active_ms = 0.0
+		recovery_ms = 0.0
+		stage_at_ms = float(settings["grace"]) * 60000.0
+
+func _today_key() -> String:
+	var d = Time.get_date_dict_from_system()
+	return "%04d-%02d-%02d" % [int(d["year"]), int(d["month"]), int(d["day"])]
+
+func _roll_daily_counters() -> void:
+	var current_key = _today_key()
+	if today_key != current_key:
+		today_key = current_key
+		today_active_ms = 0.0
+		today_rest_ms = 0.0
+
 func _read_native_state() -> void:
 	if bridge == null:
 		return
@@ -125,6 +154,8 @@ func _read_native_state() -> void:
 	stage = int(bridge.getStage())
 	active_ms = float(bridge.getActiveMs())
 	pause_until = float(bridge.getPausedUntil()) / 1000.0
+	today_active_ms = float(bridge.getTodayActiveMs())
+	today_rest_ms = float(bridge.getTodayRestMs())
 	stage_at_ms = float(bridge.getNextStageMs())
 
 func _launch_windows_overlay() -> void:
@@ -153,20 +184,34 @@ func _write_windows_overlay_config() -> void:
 		int(settings["color"]), int(settings["masks"]), paused])
 	file.close()
 
+func _is_active_usage() -> bool:
+	if OS.get_name() == "Windows":
+		# Focusing the controller window is NOT proof of active use:
+		# a visible, untouched window should eventually count as rest.
+		return _windows_active_input()
+	return DisplayServer.window_is_focused()
+
 func _windows_active_input() -> bool:
+	# Fail closed: if the helper disappears or its idle sample is invalid,
+	# keep the last state classified as active instead of giving a false rest bonus.
 	if not win_overlay_active:
-		return false
+		return true
 	if not OS.is_process_running(win_overlay_pid):
 		win_overlay_active = false
-		return false
+		return true
 	if not FileAccess.file_exists(win_overlay_idle):
-		return false
+		return true
 	var file = FileAccess.open(win_overlay_idle, FileAccess.READ)
 	if file == null:
-		return false
-	var idle_ms: int = int(file.get_as_text().strip_edges())
+		return true
+	var raw_idle := file.get_as_text().strip_edges()
 	file.close()
-	return idle_ms < 5 * 60 * 1000
+	if not raw_idle.is_valid_int():
+		return true
+	var idle_ms: int = int(raw_idle)
+	if idle_ms < 0:
+		return true
+	return idle_ms < WINDOWS_INPUT_IDLE_GRACE_MS
 
 func _exit_tree() -> void:
 	if not win_cpu_config.is_empty():
@@ -292,6 +337,8 @@ func _set_running() -> void:
 			stage = 0
 			active_ms = 0.0
 			recovery_ms = 0.0
+			rest_streak_ms = 0.0
+			rest_bonus_awarded = false
 			pause_until = 0.0
 			stage_at_ms = float(settings["grace"]) * 60000.0
 	_save_state()
@@ -307,12 +354,20 @@ func _set_pause() -> void:
 			bridge.pauseMonitor()
 		_read_native_state()
 	else:
+		# A manual pause/resume always terminates the previous continuous rest
+		# period. Time spent paused never contributes to the 3-minute bonus.
+		_recovery_pause_boundary()
 		if pause_until > Time.get_unix_time_from_system():
 			pause_until = 0.0
 		else:
 			pause_until = Time.get_unix_time_from_system() + 15.0 * 60.0
 	_save_state()
 	_refresh_view()
+
+func _recovery_pause_boundary() -> void:
+	recovery_ms = 0.0
+	rest_streak_ms = 0.0
+	rest_bonus_awarded = false
 
 func _change_stage(new_stage: int) -> void:
 	stage = clampi(new_stage, 0, MAX_STAGE)
@@ -347,6 +402,8 @@ func _reset() -> void:
 		stage = 0
 		active_ms = 0.0
 		recovery_ms = 0.0
+		rest_streak_ms = 0.0
+		rest_bonus_awarded = false
 		stage_at_ms = float(settings["grace"]) * 60000.0
 	_update_visuals()
 	_save_state()
@@ -363,6 +420,12 @@ func _load_state() -> void:
 	active_ms = float(cfg.get_value("session", "active_ms", 0.0))
 	stage_at_ms = float(cfg.get_value("session", "stage_at_ms", settings["grace"] * 60000.0))
 	pause_until = float(cfg.get_value("session", "pause_until", 0.0))
+	recovery_ms = float(cfg.get_value("session", "recovery_ms", 0.0))
+	rest_streak_ms = float(cfg.get_value("session", "rest_streak_ms", 0.0))
+	rest_bonus_awarded = bool(cfg.get_value("session", "rest_bonus_awarded", false))
+	today_key = str(cfg.get_value("stats", "day_key", ""))
+	today_active_ms = float(cfg.get_value("stats", "active_ms", 0.0))
+	today_rest_ms = float(cfg.get_value("stats", "rest_ms", 0.0))
 
 func _save_state() -> void:
 	var cfg = ConfigFile.new()
@@ -373,6 +436,12 @@ func _save_state() -> void:
 	cfg.set_value("session", "active_ms", active_ms)
 	cfg.set_value("session", "stage_at_ms", stage_at_ms)
 	cfg.set_value("session", "pause_until", pause_until)
+	cfg.set_value("session", "recovery_ms", recovery_ms)
+	cfg.set_value("session", "rest_streak_ms", rest_streak_ms)
+	cfg.set_value("session", "rest_bonus_awarded", rest_bonus_awarded)
+	cfg.set_value("stats", "day_key", today_key)
+	cfg.set_value("stats", "active_ms", today_active_ms)
+	cfg.set_value("stats", "rest_ms", today_rest_ms)
 	cfg.save(CONFIG_FILE)
 
 func _settings_changed() -> void:
@@ -380,7 +449,7 @@ func _settings_changed() -> void:
 	if bridge != null:
 		bridge.setConfig(int(settings["grace"]), int(settings["interval"]),
 			int(settings["recovery"]), int(settings["strength"]),
-			bool(settings["color"]), bool(settings["masks"]))
+			bool(settings["color"]), bool(settings["masks"]), bool(settings["smart_recovery"]))
 		bridge.setRootCpuEnabled(bool(settings["cpu_android_root"]))
 	elif OS.get_name() == "Windows":
 		_write_windows_cpu_config()
@@ -399,6 +468,8 @@ func _refresh_view() -> void:
 	status_label.add_theme_color_override("font_color", WARNING if paused else (ACCENT if running else MUTED))
 	var minutes = int(active_ms / 60000.0)
 	active_label.text = "누적 사용  %d시간 %02d분" % [int(minutes / 60), minutes % 60]
+	if is_instance_valid(daily_label):
+		daily_label.text = "오늘 사용 %d분  ·  휴식 %d분" % [int(today_active_ms / 60000.0), int(today_rest_ms / 60000.0)]
 	var until_ms = (float(settings["grace"]) * 60000.0 if stage == 0 else stage_at_ms) - active_ms
 	if stage >= MAX_STAGE:
 		next_label.text = "최고 단계에 도달했어"
@@ -495,6 +566,8 @@ func _build_ui() -> void:
 	dashboard.add_child(progress_bar)
 	active_label = _label("누적 사용 0시간 00분", 19, WHITE, true)
 	dashboard.add_child(active_label)
+	daily_label = _label("오늘 사용 0분  ·  휴식 0분", 14, MUTED)
+	dashboard.add_child(daily_label)
 	next_label = _label("다음 단계까지 약 10분", 14, MUTED)
 	dashboard.add_child(next_label)
 
@@ -510,6 +583,8 @@ func _build_ui() -> void:
 	_add_slider(content, "첫 단계까지", "grace", 1, 30, "분")
 	_add_slider(content, "단계 상승 간격", "interval", 1, 15, "분")
 	_add_slider(content, "단계 회복 간격", "recovery", 1, 10, "분")
+	_add_toggle(content, "Smart Recovery: 3분 연속 휴식 시 1단계 추가 회복", "smart_recovery")
+	content.add_child(_label("기본값은 꺼짐. 기존 회복 방식과 비교할 수 있어. 화면을 다시 켜면 연속 휴식 시간이 초기화돼.", 12, MUTED))
 
 	content.add_child(_label("화면 효과", 22, WHITE, true))
 	_add_toggle(content, "부드러운 색상 오버레이", "color")
@@ -559,7 +634,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.6.0 · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.7.0 (Experimental) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
