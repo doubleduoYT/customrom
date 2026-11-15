@@ -67,7 +67,15 @@ public final class OveruseMonitorService extends Service {
             }
             if (pauseUntil == 0L) {
                 rollDailyCounters();
-                if (screenInUse()) {
+                boolean screenActive = screenInUse();
+                boolean selective = prefs.getBoolean("selective_enabled", false);
+                boolean inTarget = !selective || (screenActive && selectionAllowed());
+
+                // Without Usage Access, neither penalize the user nor simulate
+                // rest; temporarily freeze the stage and remove active effects.
+                if (selective && (appMonitor == null || !appMonitor.hasAccess())) {
+                    resetRestForPauseBoundary();
+                } else if (screenActive && inTarget) {
                     activeMs += delta;
                     todayActiveMs += delta;
                     recoveryMs = 0L;
@@ -79,7 +87,9 @@ public final class OveruseMonitorService extends Service {
                         setStage(stage + 1);
                     }
                 } else {
-                    todayRestMs += delta;
+                    // Off-target time recovers the selected-app stage, but is NOT
+                    // included in physical screen-off rest statistics.
+                    if (!screenActive) todayRestMs += delta;
                     restStreakMs += delta;
                     recoveryMs += delta;
                     if (stage > 0 && recoveryMs >= recoveryIntervalMs()) {
@@ -92,7 +102,6 @@ public final class OveruseMonitorService extends Service {
                             stageAtMs = activeMs + intervalMs();
                         }
                     }
-                    // Exactly one optional bonus after three continuous minutes of rest.
                     if (prefs.getBoolean("smart_recovery", false)
                             && !restBonusAwarded && restStreakMs >= SMART_BONUS_REST_MS) {
                         restBonusAwarded = true;
