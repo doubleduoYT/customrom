@@ -39,6 +39,7 @@ public final class OveruseMonitorService extends Service {
     private SharedPreferences prefs;
     private WindowManager wm;
     private RootCpuLimiter cpuLimiter;
+    private ForegroundAppMonitor appMonitor;
     private TintOverlay overlay;
     private boolean alive;
     private int stage;
@@ -113,7 +114,7 @@ public final class OveruseMonitorService extends Service {
                 save(true);
                 if (cpuLimiter != null) {
                     cpuLimiter.update(alive, pauseUntil > System.currentTimeMillis(),
-                            screenInUse(), stage);
+                            screenInUse() && selectionAllowed(), stage);
                 }
             }
             handler.postDelayed(this, 1000L);
@@ -124,6 +125,7 @@ public final class OveruseMonitorService extends Service {
         super.onCreate();
         prefs = getSharedPreferences(OveruseBridge.PREFS, MODE_PRIVATE);
         cpuLimiter = new RootCpuLimiter(this, prefs);
+        appMonitor = new ForegroundAppMonitor(this, prefs);
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         stage = Math.max(0, Math.min(5, prefs.getInt("stage", 0)));
         activeMs = Math.max(0L, prefs.getLong("active_ms", 0L));
@@ -185,7 +187,7 @@ public final class OveruseMonitorService extends Service {
         save(true);
         if (cpuLimiter != null) {
             cpuLimiter.update(true, pauseUntil > System.currentTimeMillis(),
-                    screenInUse(), stage);
+                    screenInUse() && selectionAllowed(), stage);
         }
         notifyUpdated();
         return START_STICKY;
@@ -243,6 +245,16 @@ public final class OveruseMonitorService extends Service {
                 .apply();
     }
 
+    private boolean selectionAllowed() {
+        if (appMonitor == null) return !prefs.getBoolean("selective_enabled", false);
+        boolean allowed = appMonitor.allowIntervention();
+        String newState = appMonitor.status();
+        if (!newState.equals(prefs.getString("selection_status", ""))) {
+            prefs.edit().putString("selection_status", newState).apply();
+        }
+        return allowed;
+    }
+
     private void markOverlay(String state) {
         prefs.edit().putString("overlay_status", state).apply();
     }
@@ -266,6 +278,11 @@ public final class OveruseMonitorService extends Service {
         if (!screenInUse()) {
             clearOverlay();
             markOverlay("SCREEN_LOCKED");
+            return;
+        }
+        if (!selectionAllowed()) {
+            clearOverlay();
+            markOverlay("SELECTIVE_" + appMonitor.status());
             return;
         }
         if (wm == null) {
