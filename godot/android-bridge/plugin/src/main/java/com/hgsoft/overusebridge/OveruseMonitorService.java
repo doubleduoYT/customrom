@@ -163,8 +163,10 @@ public final class OveruseMonitorService extends Service {
             return START_NOT_STICKY;
         }
         if ("PAUSE".equals(action)) {
+            resetRestForPauseBoundary();
             pauseUntil = System.currentTimeMillis() + 15L * MINUTE;
         } else if ("RESUME".equals(action)) {
+            resetRestForPauseBoundary();
             pauseUntil = 0L;
         } else if ("RESET".equals(action)) {
             stage = 0;
@@ -187,6 +189,13 @@ public final class OveruseMonitorService extends Service {
         }
         notifyUpdated();
         return START_STICKY;
+    }
+
+    /** Pausing or resuming cannot carry a partial rest period into a new one. */
+    private void resetRestForPauseBoundary() {
+        recoveryMs = 0L;
+        restStreakMs = 0L;
+        restBonusAwarded = false;
     }
 
     private void rollDailyCounters() {
