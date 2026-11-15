@@ -90,6 +90,47 @@ public class OveruseBridge extends GodotPlugin {
     }
 
     @UsedByGodot
+    public boolean hasUsageAccess() {
+        Activity activity = getActivity();
+        if (activity == null) return false;
+        android.app.AppOpsManager ops = (android.app.AppOpsManager)
+                activity.getSystemService(Context.APP_OPS_SERVICE);
+        return ops != null && ops.checkOpNoThrow(
+                android.app.AppOpsManager.OPSTR_GET_USAGE_STATS,
+                android.os.Process.myUid(), activity.getPackageName())
+                == android.app.AppOpsManager.MODE_ALLOWED;
+    }
+
+    @UsedByGodot
+    public void requestUsageAccess() {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        activity.runOnUiThread(() -> {
+            try {
+                activity.startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS));
+            } catch (RuntimeException error) {
+                activity.startActivity(new Intent(Settings.ACTION_SETTINGS));
+            }
+        });
+    }
+
+    @UsedByGodot
+    public void setSelectiveConfig(boolean enabled, String packages) {
+        prefs().edit()
+                .putBoolean("selective_enabled", enabled)
+                .putString("selected_packages", AppSelectionPolicy.normalizedTargets(packages))
+                .apply();
+        if (isRunning()) send("REFRESH", -1);
+    }
+
+    @UsedByGodot
+    public String getSelectionStatus() {
+        if (!prefs().getBoolean("selective_enabled", false)) return "SELECTIVE_DISABLED";
+        if (!hasUsageAccess()) return "USAGE_ACCESS_REQUIRED";
+        return prefs().getString("selection_status", "WAITING_FOR_FOREGROUND");
+    }
+
+    @UsedByGodot
     public void setRootCpuEnabled(boolean enabled) {
         prefs().edit().putBoolean("cpu_root_enabled", enabled).apply();
         if (isRunning()) send("PERFORMANCE", -1);
@@ -111,7 +152,7 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.7.0-android-smart-recovery";
+        return "0.8.0-android-selective-preview";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }
