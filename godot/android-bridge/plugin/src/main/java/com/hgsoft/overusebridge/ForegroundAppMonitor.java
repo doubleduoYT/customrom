@@ -34,9 +34,14 @@ final class ForegroundAppMonitor {
     }
 
     boolean hasAccess() {
-        AppOpsManager ops = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
-        return ops != null && ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
-                Process.myUid(), context.getPackageName()) == AppOpsManager.MODE_ALLOWED;
+        try {
+            AppOpsManager ops = (AppOpsManager) context.getSystemService(Context.APP_OPS_SERVICE);
+            return ops != null && ops.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS,
+                    Process.myUid(), context.getPackageName()) == AppOpsManager.MODE_ALLOWED;
+        } catch (RuntimeException ignored) {
+            // Broken/modified vendor AppOps implementations are not trusted.
+            return false;
+        }
     }
 
     String status() { return status; }
