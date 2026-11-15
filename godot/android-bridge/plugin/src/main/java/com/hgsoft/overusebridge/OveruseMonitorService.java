@@ -89,8 +89,16 @@ public final class OveruseMonitorService extends Service {
                 } else {
                     // Off-target time recovers the selected-app stage, but is NOT
                     // included in physical screen-off rest statistics.
-                    if (!screenActive) todayRestMs += delta;
-                    restStreakMs += delta;
+                    if (!screenActive) {
+                        todayRestMs += delta;
+                        restStreakMs += delta;
+                    } else {
+                        // Leaving a selected app is a break from that app, not
+                        // proof of physical rest. It can recover a normal stage,
+                        // but cannot earn the three-minute screen-off bonus.
+                        restStreakMs = 0L;
+                        restBonusAwarded = false;
+                    }
                     recoveryMs += delta;
                     if (stage > 0 && recoveryMs >= recoveryIntervalMs()) {
                         recoveryMs -= recoveryIntervalMs();
