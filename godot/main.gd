@@ -481,7 +481,14 @@ func _refresh_view() -> void:
 	var minutes = int(active_ms / 60000.0)
 	active_label.text = "누적 사용  %d시간 %02d분" % [int(minutes / 60), minutes % 60]
 	if is_instance_valid(daily_label):
-		daily_label.text = "오늘 사용 %d분  ·  휴식 %d분" % [int(today_active_ms / 60000.0), int(today_rest_ms / 60000.0)]
+		if bridge != null and bool(settings["selective_android"]):
+			daily_label.text = "오늘 대상 %d분 · 다른 앱 %d분 · 화면 OFF %d분" % [
+				int(float(bridge.getTodayTargetMs()) / 60000.0),
+				int(float(bridge.getTodayOtherAppMs()) / 60000.0),
+				int(today_rest_ms / 60000.0)]
+		else:
+			daily_label.text = "오늘 사용 %d분  ·  휴식 %d분" % [
+				int(today_active_ms / 60000.0), int(today_rest_ms / 60000.0)]
 	var until_ms = (float(settings["grace"]) * 60000.0 if stage == 0 else stage_at_ms) - active_ms
 	if stage >= MAX_STAGE:
 		next_label.text = "최고 단계에 도달했어"
