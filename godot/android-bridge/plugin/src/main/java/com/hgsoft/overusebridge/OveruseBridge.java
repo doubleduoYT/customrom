@@ -13,6 +13,8 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.Date;
+import java.text.SimpleDateFormat;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
@@ -211,6 +213,57 @@ public class OveruseBridge extends GodotPlugin {
     }
 
     @UsedByGodot
+    public void setAnalyticsEnabled(boolean enabled) {
+        SharedPreferences p = prefs();
+        if (p.getBoolean("analytics_enabled", false) == enabled) return;
+        p.edit().putBoolean("analytics_enabled", enabled).apply();
+        if (isRunning()) send("ANALYTICS_CONFIG", -1);
+    }
+
+    private UsageAnalytics todayAnalytics() {
+        UsageAnalytics result = UsageAnalytics.decode(prefs().getString("analytics_data", ""));
+        result.startDay(new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date()));
+        return result;
+    }
+
+    @UsedByGodot
+    public String getAnalyticsSummary() {
+        String summary = todayAnalytics().summary();
+        return (prefs().getBoolean("analytics_enabled", false) ? "" : "기록 중지 · ") + summary;
+    }
+
+    @UsedByGodot
+    public String getAnalyticsReport() {
+        return todayAnalytics().report();
+    }
+
+    @UsedByGodot
+    public void clearAnalytics() {
+        prefs().edit().remove("analytics_data").apply();
+        if (isRunning()) send("CLEAR_ANALYTICS", -1);
+    }
+
+    /**
+     * Share is only initiated by an explicit user press.
+     * Includes selected package names; nothing is uploaded automatically.
+     */
+    @UsedByGodot
+    public void shareAnalytics() {
+        Activity activity = getActivity();
+        if (activity == null) return;
+        UsageAnalytics stats = todayAnalytics();
+        if (stats.recordedApps() == 0) return;
+        String day = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
+        String report = "Overuse Controller local usage estimate · " + day + "\n" + stats.report();
+        activity.runOnUiThread(() -> {
+            Intent share = new Intent(Intent.ACTION_SEND);
+            share.setType("text/plain");
+            share.putExtra(Intent.EXTRA_TEXT, report);
+            activity.startActivity(Intent.createChooser(share, "사용기록 내보내기"));
+        });
+    }
+
+    @UsedByGodot
     public void setRootCpuEnabled(boolean enabled) {
         prefs().edit().putBoolean("cpu_root_enabled", enabled).apply();
         if (isRunning()) send("PERFORMANCE", -1);
@@ -232,7 +285,7 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.8.1-android-picker-blur-preview";
+        return "0.8.3-android-optin-analytics-preview";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }
@@ -240,6 +293,8 @@ public class OveruseBridge extends GodotPlugin {
     @UsedByGodot public long getActiveMs() { return prefs().getLong("active_ms", 0L); }
     @UsedByGodot public long getTodayActiveMs() { return prefs().getLong("today_active_ms", 0L); }
     @UsedByGodot public long getTodayRestMs() { return prefs().getLong("today_rest_ms", 0L); }
+    @UsedByGodot public long getTodayTargetMs() { return prefs().getLong("today_target_ms", 0L); }
+    @UsedByGodot public long getTodayOtherAppMs() { return prefs().getLong("today_other_app_ms", 0L); }
     @UsedByGodot public long getNextStageMs() { return prefs().getLong("stage_at_ms", 600000L); }
     @UsedByGodot public long getPausedUntil() { return prefs().getLong("pause_until", 0L); }
 }
