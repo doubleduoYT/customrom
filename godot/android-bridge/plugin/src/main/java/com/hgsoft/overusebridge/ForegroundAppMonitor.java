@@ -46,6 +46,17 @@ final class ForegroundAppMonitor {
 
     String status() { return status; }
 
+    /** Only reveal a selected package to the local aggregate counter. */
+    String selectedForegroundPackage() {
+        return "TARGET_ACTIVE".equals(status) ? foreground : "";
+    }
+
+    /** Unknown foreground or revoked permission must never produce inferred exits. */
+    boolean foregroundKnown() {
+        return "TARGET_ACTIVE".equals(status) || "NOT_SELECTED".equals(status)
+                || "PROTECTED_APP".equals(status);
+    }
+
     boolean allowIntervention() {
         if (!prefs.getBoolean("selective_enabled", false)) {
             status = "SELECTIVE_DISABLED";
