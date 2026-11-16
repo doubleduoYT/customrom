@@ -58,6 +58,7 @@ var daily_label: Label
 var selective_status_label: Label
 var blur_status_label: Label
 var analytics_summary_label: Label
+var analytics_readiness_label: Label
 var analytics_apps_label: Label
 var picker_cached_lines: PackedStringArray = PackedStringArray()
 var picker_checked_packages: Dictionary = {}
@@ -482,10 +483,11 @@ func _refresh_view() -> void:
 	active_label.text = "누적 사용  %d시간 %02d분" % [int(minutes / 60), minutes % 60]
 	if is_instance_valid(daily_label):
 		if bridge != null and bool(settings["selective_android"]):
-			daily_label.text = "오늘 대상 %d분 · 다른 앱 %d분 · 화면 OFF %d분" % [
+			var consent_note := " (앱 통계 OFF)" if not bool(settings["analytics_enabled"]) else ""
+			daily_label.text = "오늘 대상 %d분 · 다른 앱 %d분 · 화면 OFF %d분%s" % [
 				int(float(bridge.getTodayTargetMs()) / 60000.0),
 				int(float(bridge.getTodayOtherAppMs()) / 60000.0),
-				int(today_rest_ms / 60000.0)]
+				int(today_rest_ms / 60000.0), consent_note]
 		else:
 			daily_label.text = "오늘 사용 %d분  ·  휴식 %d분" % [
 				int(today_active_ms / 60000.0), int(today_rest_ms / 60000.0)]
@@ -501,6 +503,8 @@ func _refresh_view() -> void:
 	pause_button.disabled = not running
 	pause_button.text = "보호 계속하기" if paused else "15분 일시정지"
 	if bridge != null:
+		if is_instance_valid(analytics_readiness_label):
+			analytics_readiness_label.text = str(bridge.getAnalyticsReadiness())
 		if is_instance_valid(analytics_summary_label):
 			analytics_summary_label.text = str(bridge.getAnalyticsSummary())
 		if is_instance_valid(analytics_apps_label):
@@ -744,6 +748,8 @@ func _build_ui() -> void:
 		content.add_child(_label("기본값 OFF. 선택형 모드와 사용기록 권한을 켠 경우에만 대상 앱별 시간을 기기에 저장해. 앱을 나간 이유까지 알 수는 없어.", 13, MUTED))
 		_add_toggle(content, "선택한 앱 사용 통계 기록 (동의)", "analytics_enabled")
 		var analytics_card = _card(content)
+		analytics_readiness_label = _label("기록 조건 확인 중...", 12, WARNING)
+		analytics_card.add_child(analytics_readiness_label)
 		analytics_summary_label = _label("오늘의 기록 확인 중...", 14, WHITE, true)
 		analytics_card.add_child(analytics_summary_label)
 		analytics_apps_label = _label("기록된 앱 없음", 12, MUTED)
@@ -754,11 +760,11 @@ func _build_ui() -> void:
 			if bridge != null:
 				bridge.shareAnalytics()
 		)
-		var clear_analytics = _button("저장된 사용 기록 삭제", false)
+		var clear_analytics = _button("앱별 통계 및 대상/다른 앱 기록 삭제", false)
 		analytics_card.add_child(clear_analytics)
 		var confirm_clear = ConfirmationDialog.new()
 		confirm_clear.title = "사용 기록 삭제"
-		confirm_clear.dialog_text = "기기에 저장된 앱별 사용 시간과 이탈·재진입 통계를 모두 삭제할까?"
+		confirm_clear.dialog_text = "앱별 사용 시간, 이탈·재진입 횟수, 대상/다른 앱 누적 집계를 삭제할까? 기존 기본 사용·휴식 기록은 유지돼."
 		add_child(confirm_clear)
 		clear_analytics.pressed.connect(func() -> void:
 			confirm_clear.popup_centered()
@@ -813,7 +819,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.8.3 (Opt-in Analytics Preview) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.4 (Privacy & Safety Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
