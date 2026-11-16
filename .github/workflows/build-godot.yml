@@ -10,6 +10,7 @@ on:
       - feature/app-picker-fullscreen-blur-v0.8.1
       - feature/v0.8.2-picker-safety
       - feature/v0.8.3-opt-in-usage-analytics
+      - feature/v0.8.4-analytics-consent-safety
     paths:
       - 'godot/**'
       - '.github/workflows/build-godot.yml'
@@ -88,6 +89,15 @@ jobs:
             godot/android-bridge/plugin/src/main/java/com/hgsoft/overusebridge/UsageAnalytics.java \
             godot/tests/UsageAnalyticsTest.java
           java -cp /tmp/overuse-analytics-test com.hgsoft.overusebridge.UsageAnalyticsTest
+      - name: Test privacy consent gate for app-level usage statistics
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/overuse-consent-policy
+          javac -d /tmp/overuse-consent-policy \
+            godot/android-bridge/plugin/src/main/java/com/hgsoft/overusebridge/AnalyticsConsentPolicy.java \
+            godot/tests/AnalyticsConsentPolicyTest.java
+          java -cp /tmp/overuse-consent-policy com.hgsoft.overusebridge.AnalyticsConsentPolicyTest
       - name: Build Android native overlay bridge (Godot plugin v2)
         shell: bash
         run: |
