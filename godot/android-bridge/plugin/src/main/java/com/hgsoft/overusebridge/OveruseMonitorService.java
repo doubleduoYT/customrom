@@ -40,6 +40,7 @@ public final class OveruseMonitorService extends Service {
     private WindowManager wm;
     private RootCpuLimiter cpuLimiter;
     private ForegroundAppMonitor appMonitor;
+    private UsageAnalytics usageAnalytics;
     private TintOverlay overlay;
     private int currentBlurRadiusPx = -1;
     private boolean alive;
@@ -124,6 +125,22 @@ public final class OveruseMonitorService extends Service {
                         }
                     }
                 }
+            } else if (usageAnalytics != null) {
+                usageAnalytics.endObservation();
+            }
+            if (usageAnalytics != null && pauseUntil == 0L) {
+                // Analytics is optional, selective-only, and recorded only for
+                // a known foreground package while the screen is unlocked.
+                boolean selectiveMode = prefs.getBoolean("selective_enabled", false);
+                boolean screenActiveForStats = screenInUse();
+                boolean allowedToSample = prefs.getBoolean("analytics_enabled", false)
+                        && selectiveMode && appMonitor != null && appMonitor.hasAccess();
+                if (allowedToSample && screenActiveForStats) selectionAllowed();
+                boolean known = allowedToSample && screenActiveForStats
+                        && appMonitor.foregroundKnown();
+                String target = known ? appMonitor.selectedForegroundPackage() : "";
+                usageAnalytics.observe(target, known, screenActiveForStats,
+                        false, allowedToSample, stage > 0, now, delta);
             }
             if (++ticks % 2 == 0) {
                 // Recheck after lock/unlock, app switching, permission changes,
@@ -144,6 +161,7 @@ public final class OveruseMonitorService extends Service {
         prefs = getSharedPreferences(OveruseBridge.PREFS, MODE_PRIVATE);
         cpuLimiter = new RootCpuLimiter(this, prefs);
         appMonitor = new ForegroundAppMonitor(this, prefs);
+        usageAnalytics = UsageAnalytics.decode(prefs.getString("analytics_data", ""));
         wm = (WindowManager) getSystemService(WINDOW_SERVICE);
         stage = Math.max(0, Math.min(5, prefs.getInt("stage", 0)));
         activeMs = Math.max(0L, prefs.getLong("active_ms", 0L));
@@ -177,6 +195,7 @@ public final class OveruseMonitorService extends Service {
             restBonusAwarded = false;
             stageAtMs = graceMs();
             pauseUntil = 0L;
+            if (usageAnalytics != null) usageAnalytics.endObservation();
             save(false);
             if (cpuLimiter != null) cpuLimiter.restore();
             stopSelf();
@@ -195,6 +214,11 @@ public final class OveruseMonitorService extends Service {
             restStreakMs = 0L;
             restBonusAwarded = false;
             stageAtMs = graceMs();
+            if (usageAnalytics != null) usageAnalytics.endObservation();
+        } else if ("CLEAR_ANALYTICS".equals(action)) {
+            if (usageAnalytics != null) usageAnalytics.clear();
+        } else if ("ANALYTICS_CONFIG".equals(action)) {
+            if (usageAnalytics != null) usageAnalytics.endObservation();
         } else if ("PREVIEW".equals(action)) {
             stage = Math.max(0, Math.min(5, intent.getIntExtra("stage", 0)));
             stageAtMs = activeMs + intervalMs();
@@ -216,6 +240,7 @@ public final class OveruseMonitorService extends Service {
         recoveryMs = 0L;
         restStreakMs = 0L;
         restBonusAwarded = false;
+        if (usageAnalytics != null) usageAnalytics.endObservation();
     }
 
     private void rollDailyCounters() {
@@ -225,6 +250,7 @@ public final class OveruseMonitorService extends Service {
             todayActiveMs = 0L;
             todayRestMs = 0L;
         }
+        if (usageAnalytics != null) usageAnalytics.startDay(key);
     }
 
     private boolean screenInUse() {
@@ -260,6 +286,7 @@ public final class OveruseMonitorService extends Service {
                 .putLong("today_rest_ms", todayRestMs)
                 .putLong("stage_at_ms", stageAtMs)
                 .putLong("pause_until", pauseUntil)
+                .putString("analytics_data", usageAnalytics == null ? "" : usageAnalytics.encode())
                 .apply();
     }
 
