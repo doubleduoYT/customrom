@@ -238,8 +238,12 @@ public class OveruseBridge extends GodotPlugin {
         SharedPreferences p = prefs();
         if (!p.getBoolean("analytics_enabled", false)) return "기록 OFF · 앱별 데이터 수집 안 함";
         if (!p.getBoolean("selective_enabled", false)) return "선택형 앱 개입을 켜야 기록할 수 있어";
+        if (AppSelectionPolicy.normalizedTargets(p.getString("selected_packages", "")).isEmpty())
+            return "먼저 기록할 대상 앱을 선택해";
         if (!hasUsageAccess()) return "앱 사용기록 접근 권한이 필요해";
         if (!isRunning()) return "보호 시작을 누르면 기록이 시작돼";
+        if (p.getLong("pause_until", 0L) > System.currentTimeMillis())
+            return "15분 일시정지 중 · 사용 통계도 중단됨";
         return "선택한 앱을 실제로 사용할 때만 기록 중 · 측정값은 추정치";
     }
 
