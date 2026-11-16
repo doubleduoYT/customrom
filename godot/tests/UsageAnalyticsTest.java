@@ -65,6 +65,14 @@ public final class UsageAnalyticsTest {
         check(UsageAnalytics.decode("corrupt\ncom.example.game\tX\tY\tZ\tQ").recordedApps() == 0,
                 "malformed stored statistics are ignored");
 
+        UsageAnalytics switching = new UsageAnalytics();
+        switching.startDay("2026-11-16");
+        switching.observe("com.example.alpha", true, true, false, true, false, 100, 1000);
+        switching.observe("com.example.beta", true, true, false, true, false, 200, 1000);
+        switching.observe("com.example.alpha", true, true, false, true, false, 300, 1000);
+        check(switching.report().contains("com.example.alpha\\t2000\\t0\\t1\\t1"),
+                "A -> B -> A within five minutes counts the reentry to A");
+
         System.out.println("PASS: " + passed + " opt-in analytics regression checks");
     }
 }
