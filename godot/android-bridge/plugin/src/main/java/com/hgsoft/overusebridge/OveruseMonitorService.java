@@ -41,6 +41,7 @@ public final class OveruseMonitorService extends Service {
     private RootCpuLimiter cpuLimiter;
     private ForegroundAppMonitor appMonitor;
     private TintOverlay overlay;
+    private int currentBlurRadiusPx = -1;
     private boolean alive;
     private int stage;
     private long activeMs;
@@ -272,6 +273,46 @@ public final class OveruseMonitorService extends Service {
         return allowed;
     }
 
+    private void setBlurStatus(String value) {
+        if (!value.equals(prefs.getString("blur_status", "")))
+            prefs.edit().putString("blur_status", value).apply();
+    }
+
+    private int requestedBlurRadiusPx() {
+        if (!prefs.getBoolean("blur_enabled", false)) {
+            setBlurStatus("BLUR_OFF");
+            return 0;
+        }
+        if (Build.VERSION.SDK_INT < 31) {
+            setBlurStatus("BLUR_REQUIRES_ANDROID_12");
+            return 0;
+        }
+        if (wm == null || !wm.isCrossWindowBlurEnabled()) {
+            // Runtime blur can be disabled by battery saving or the GPU.
+            setBlurStatus("BLUR_SYSTEM_DISABLED");
+            return 0;
+        }
+        int blurDp = BlurPolicy.radiusDp(stage, prefs.getInt("blur_max_dp", 26));
+        int pixels = Math.round(blurDp * getResources().getDisplayMetrics().density);
+        if (pixels <= 0) {
+            setBlurStatus("BLUR_WAITING_STAGE");
+            return 0;
+        }
+        setBlurStatus("BLUR_ACTIVE");
+        return pixels;
+    }
+
+    private void applyBlurParams(WindowManager.LayoutParams params, int pixels) {
+        if (Build.VERSION.SDK_INT < 31) return;
+        if (pixels > 0) {
+            params.flags |= WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
+            params.setBlurBehindRadius(pixels);
+        } else {
+            params.flags &= ~WindowManager.LayoutParams.FLAG_BLUR_BEHIND;
+            params.setBlurBehindRadius(0);
+        }
+    }
+
     private void markOverlay(String state) {
         prefs.edit().putString("overlay_status", state).apply();
     }
@@ -308,6 +349,7 @@ public final class OveruseMonitorService extends Service {
             return;
         }
         try {
+            int blurPx = requestedBlurRadiusPx();
             if (overlay == null) {
                 TintOverlay candidate = new TintOverlay(this);
                 int type = Build.VERSION.SDK_INT >= 26
@@ -322,9 +364,17 @@ public final class OveruseMonitorService extends Service {
                                 | WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
                                 | WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                         PixelFormat.TRANSLUCENT);
+                applyBlurParams(params, blurPx);
                 wm.addView(candidate, params);
                 overlay = candidate;
+                currentBlurRadiusPx = blurPx;
                 Log.i("OveruseController", "System-wide touch-through overlay attached");
+            } else if (currentBlurRadiusPx != blurPx) {
+                WindowManager.LayoutParams params =
+                        (WindowManager.LayoutParams) overlay.getLayoutParams();
+                applyBlurParams(params, blurPx);
+                wm.updateViewLayout(overlay, params);
+                currentBlurRadiusPx = blurPx;
             }
             overlay.invalidate();
             markOverlay("VISIBLE_SYSTEM_OVERLAY");
@@ -336,11 +386,17 @@ public final class OveruseMonitorService extends Service {
     }
 
     private void clearOverlay() {
-        if (overlay == null) return;
+        if (prefs != null && prefs.getBoolean("blur_enabled", false))
+            setBlurStatus("BLUR_INACTIVE");
+        if (overlay == null) {
+            currentBlurRadiusPx = -1;
+            return;
+        }
         try {
             wm.removeViewImmediate(overlay);
         } catch (RuntimeException ignored) { }
         overlay = null;
+        currentBlurRadiusPx = -1;
     }
 
     private final class TintOverlay extends View {
