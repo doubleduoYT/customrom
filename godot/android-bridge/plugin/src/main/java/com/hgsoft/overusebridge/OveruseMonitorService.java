@@ -74,6 +74,10 @@ public final class OveruseMonitorService extends Service {
                 boolean screenActive = screenInUse();
                 boolean selective = prefs.getBoolean("selective_enabled", false);
                 boolean inTarget = !selective || (screenActive && selectionAllowed());
+                boolean collectApps = AnalyticsConsentPolicy.canRecord(
+                        prefs.getBoolean("analytics_enabled", false),
+                        selective, appMonitor != null && appMonitor.hasAccess(),
+                        screenActive, appMonitor != null && appMonitor.foregroundKnown(), false);
 
                 // Without Usage Access, neither penalize the user nor simulate
                 // rest; temporarily freeze the stage and remove active effects.
@@ -82,7 +86,7 @@ public final class OveruseMonitorService extends Service {
                 } else if (screenActive && inTarget) {
                     activeMs += delta;
                     todayActiveMs += delta;
-                    if (selective) todayTargetMs += delta;
+                    if (selective && collectApps) todayTargetMs += delta;
                     recoveryMs = 0L;
                     restStreakMs = 0L;
                     restBonusAwarded = false;
@@ -98,7 +102,7 @@ public final class OveruseMonitorService extends Service {
                         todayRestMs += delta;
                         restStreakMs += delta;
                     } else {
-                        if (selective && appMonitor != null && appMonitor.foregroundKnown())
+                        if (selective && collectApps)
                             todayOtherAppMs += delta;
 
                         // Leaving a selected app is a break from that app, not
@@ -139,13 +143,16 @@ public final class OveruseMonitorService extends Service {
                 // a known foreground package while the screen is unlocked.
                 boolean selectiveMode = prefs.getBoolean("selective_enabled", false);
                 boolean screenActiveForStats = screenInUse();
-                boolean allowedToSample = prefs.getBoolean("analytics_enabled", false)
-                        && selectiveMode && appMonitor != null && appMonitor.hasAccess();
-                if (allowedToSample && screenActiveForStats) selectionAllowed();
-                boolean known = allowedToSample && screenActiveForStats
-                        && appMonitor.foregroundKnown();
-                String target = known ? appMonitor.selectedForegroundPackage() : "";
-                usageAnalytics.observe(target, known, screenActiveForStats,
+                boolean hasUsageAccess = appMonitor != null && appMonitor.hasAccess();
+                // Refresh the foreground state only when collection is explicitly enabled.
+                if (prefs.getBoolean("analytics_enabled", false)
+                        && selectiveMode && hasUsageAccess && screenActiveForStats) selectionAllowed();
+                boolean known = appMonitor != null && appMonitor.foregroundKnown();
+                boolean allowedToSample = AnalyticsConsentPolicy.canRecord(
+                        prefs.getBoolean("analytics_enabled", false), selectiveMode,
+                        hasUsageAccess, screenActiveForStats, known, false);
+                String target = allowedToSample ? appMonitor.selectedForegroundPackage() : "";
+                usageAnalytics.observe(target, allowedToSample, screenActiveForStats,
                         false, allowedToSample, stage > 0, now, delta);
             }
             if (++ticks % 2 == 0) {
@@ -165,6 +172,12 @@ public final class OveruseMonitorService extends Service {
     @Override public void onCreate() {
         super.onCreate();
         prefs = getSharedPreferences(OveruseBridge.PREFS, MODE_PRIVATE);
+        // v0.8.3 stored these two app-level aggregates before the user opted in.
+        // Clear any legacy values once; v0.8.4 only samples after explicit consent.
+        if (!prefs.getBoolean("analytics_v084_migrated", false)) {
+            prefs.edit().remove("today_target_ms").remove("today_other_app_ms")
+                    .putBoolean("analytics_v084_migrated", true).commit();
+        }
         cpuLimiter = new RootCpuLimiter(this, prefs);
         appMonitor = new ForegroundAppMonitor(this, prefs);
         usageAnalytics = UsageAnalytics.decode(prefs.getString("analytics_data", ""));
@@ -225,6 +238,8 @@ public final class OveruseMonitorService extends Service {
             if (usageAnalytics != null) usageAnalytics.endObservation();
         } else if ("CLEAR_ANALYTICS".equals(action)) {
             if (usageAnalytics != null) usageAnalytics.clear();
+            todayTargetMs = 0L;
+            todayOtherAppMs = 0L;
         } else if ("ANALYTICS_CONFIG".equals(action)) {
             if (usageAnalytics != null) usageAnalytics.endObservation();
         } else if ("PREVIEW".equals(action)) {
