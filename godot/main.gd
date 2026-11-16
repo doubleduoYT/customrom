@@ -57,6 +57,7 @@ var daily_label: Label
 var selective_status_label: Label
 var blur_status_label: Label
 var picker_cached_lines: PackedStringArray = PackedStringArray()
+var picker_checked_packages: Dictionary = {}
 var next_label: Label
 var info_label: Label
 var progress_bar: ProgressBar
@@ -627,6 +628,8 @@ func _build_ui() -> void:
 	_add_toggle(content, "부드러운 색상 오버레이", "color")
 	_add_toggle(content, "화면 가림 마스크", "masks")
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
+	if OS.get_name() == "Windows":
+		content.add_child(_label("전체 화면 Blur는 Windows에서 아직 미지원이야. 지금은 색상 오버레이와 화면 가림 효과만 작동해.", 12, WARNING))
 	if OS.get_name() == "Android":
 		_add_toggle(content, "전체 화면 흐림 (Android 12+, 실험 기능)", "blur_enabled")
 		_add_slider(content, "5단계 최대 흐림 반경", "blur_max_dp", 5, 40, "dp")
@@ -653,32 +656,44 @@ func _build_ui() -> void:
 		app_list.select_mode = ItemList.SELECT_MULTI
 		app_list.custom_minimum_size = Vector2(0, 230)
 		select_card.add_child(app_list)
+		app_list.multi_selected.connect(func(index: int, selected: bool) -> void:
+			var package_name: String = str(app_list.get_item_metadata(index))
+			if selected:
+				picker_checked_packages[package_name] = true
+			else:
+				picker_checked_packages.erase(package_name)
+		)
 		var load_apps = _button("설치된 앱 불러오기", false)
 		select_card.add_child(load_apps)
 		load_apps.pressed.connect(func() -> void:
 			if bridge != null:
 				picker_cached_lines = str(bridge.getLaunchableApps()).split("\n", false)
+				picker_checked_packages.clear()
+				for entry in target_input.text.split(",", false):
+					var package_name: String = entry.strip_edges().to_lower()
+					if not package_name.is_empty():
+						picker_checked_packages[package_name] = true
 				_update_picker_results(app_list, app_search.text)
 		)
 		app_search.text_changed.connect(func(query: String) -> void:
 			_update_picker_results(app_list, query)
 		)
-		var add_selected_apps = _button("선택한 앱을 대상 목록에 추가", false)
+		var add_selected_apps = _button("체크한 앱 목록 적용 (체크 해제 시 대상에서도 제거)", false)
 		select_card.add_child(add_selected_apps)
 		add_selected_apps.pressed.connect(func() -> void:
-			var packages: PackedStringArray = PackedStringArray()
-			for existing in target_input.text.split(",", false):
-				var pkg: String = existing.strip_edges()
-				if not pkg.is_empty() and not packages.has(pkg):
-					packages.append(pkg)
-			for selected_index in app_list.get_selected_items():
-				var pkg: String = str(app_list.get_item_metadata(selected_index))
-				if not packages.has(pkg):
-					packages.append(pkg)
-			target_input.text = ",".join(packages)
+			if picker_cached_lines.is_empty():
+				return
+			target_input.text = _picker_merged_targets(target_input.text)
 			settings["selected_packages"] = target_input.text
 			_settings_changed()
 		)
+		var clear_picker = _button("앱 선택 체크 모두 해제", false)
+		select_card.add_child(clear_picker)
+		clear_picker.pressed.connect(func() -> void:
+			picker_checked_packages.clear()
+			_update_picker_results(app_list, app_search.text)
+		)
+		select_card.add_child(_label("검색 중에도 체크한 앱은 유지돼. 적용하면 체크를 해제한 설치 앱은 대상에서 빠지고, 수동 패키지 항목은 유지돼.", 12, MUTED))
 		var save_targets = _button("대상 앱 목록 저장", false)
 		select_card.add_child(save_targets)
 		save_targets.pressed.connect(func() -> void:
@@ -742,7 +757,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.8.1 (Picker + Blur Preview) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.2 (Picker & Safety Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -756,6 +771,25 @@ func _build_ui() -> void:
 		add_child(stripe)
 		stripes.append(stripe)
 
+func _picker_merged_targets(current_csv: String) -> String:
+	# Visible launcher apps are managed by the checkboxes; package names
+	# entered manually for non-launchable apps are preserved unchanged.
+	var launchable: Dictionary = {}
+	for line in picker_cached_lines:
+		var parts := line.split("\t", false, 1)
+		if parts.size() == 2:
+			launchable[parts[0]] = true
+	var packages: PackedStringArray = PackedStringArray()
+	for existing in current_csv.split(",", false):
+		var package_name: String = existing.strip_edges().to_lower()
+		if not package_name.is_empty() and not launchable.has(package_name) and not packages.has(package_name):
+			packages.append(package_name)
+	for checked in picker_checked_packages:
+		var package_name: String = str(checked)
+		if bool(picker_checked_packages[checked]) and not packages.has(package_name):
+			packages.append(package_name)
+	return ",".join(packages)
+
 func _update_picker_results(list: ItemList, query: String) -> void:
 	list.clear()
 	var term := query.strip_edges().to_lower()
@@ -768,8 +802,10 @@ func _update_picker_results(list: ItemList, query: String) -> void:
 		if not term.is_empty() and term not in package_name.to_lower() and term not in app_name.to_lower():
 			continue
 		list.add_item("%s  ·  %s" % [app_name, package_name])
-		list.set_item_metadata(list.item_count - 1, package_name)
-
+		var index: int = list.item_count - 1
+		list.set_item_metadata(index, package_name)
+		if picker_checked_packages.has(package_name):
+			list.select(index, false)
 
 func status_label_placeholder() -> Label:
 	status_label = _label("●  보호 중지", 15, MUTED, true)
