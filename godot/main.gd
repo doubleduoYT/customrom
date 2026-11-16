@@ -18,6 +18,7 @@ const WINDOWS_INPUT_IDLE_GRACE_MS = 30000 # Ignore brief pauses while typing/rea
 var settings = {
 	"grace": 10, "interval": 2, "recovery": 1, "smart_recovery": false,
 	"strength": 65, "color": true, "masks": true,
+	"blur_enabled": false, "blur_max_dp": 26,
 	"cpu_windows_enabled": false, "cpu_android_root": false,
 	"selective_android": false, "selected_packages": ""
 }
@@ -54,6 +55,8 @@ var stage_label: Label
 var active_label: Label
 var daily_label: Label
 var selective_status_label: Label
+var blur_status_label: Label
+var picker_cached_lines: PackedStringArray = PackedStringArray()
 var next_label: Label
 var info_label: Label
 var progress_bar: ProgressBar
@@ -450,6 +453,7 @@ func _settings_changed() -> void:
 	_save_state()
 	if bridge != null:
 		bridge.setSelectiveConfig(bool(settings["selective_android"]), str(settings["selected_packages"]))
+		bridge.setBlurConfig(bool(settings["blur_enabled"]), int(settings["blur_max_dp"]))
 		bridge.setConfig(int(settings["grace"]), int(settings["interval"]),
 			int(settings["recovery"]), int(settings["strength"]),
 			bool(settings["color"]), bool(settings["masks"]), bool(settings["smart_recovery"]))
@@ -485,6 +489,19 @@ func _refresh_view() -> void:
 	pause_button.disabled = not running
 	pause_button.text = "보호 계속하기" if paused else "15분 일시정지"
 	if bridge != null:
+		if is_instance_valid(blur_status_label):
+			var blur_state: String = str(bridge.getBlurStatus())
+			match blur_state:
+				"BLUR_OFF":
+					blur_status_label.text = "화면 전체 흐림 꺼짐"
+				"BLUR_ACTIVE":
+					blur_status_label.text = "전체 화면 흐림 적용 중"
+				"BLUR_REQUIRES_ANDROID_12":
+					blur_status_label.text = "전체 흐림은 Android 12 이상에서 지원"
+				"BLUR_SYSTEM_DISABLED":
+					blur_status_label.text = "기기/절전 모드가 흐림을 비활성화함 · 기존 효과 유지"
+				_:
+					blur_status_label.text = "흐림 상태: " + blur_state
 		if is_instance_valid(selective_status_label):
 			var policy_state: String = str(bridge.getSelectionStatus())
 			match policy_state:
@@ -606,6 +623,12 @@ func _build_ui() -> void:
 	_add_toggle(content, "부드러운 색상 오버레이", "color")
 	_add_toggle(content, "화면 가림 마스크", "masks")
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
+	if OS.get_name() == "Android":
+		_add_toggle(content, "전체 화면 흐림 (Android 12+, 실험 기능)", "blur_enabled")
+		_add_slider(content, "5단계 최대 흐림 반경", "blur_max_dp", 5, 40, "dp")
+		blur_status_label = _label("전체 흐림 상태 확인 중...", 13, MUTED)
+		content.add_child(blur_status_label)
+		content.add_child(_label("흐림은 앱 바깥 전체 화면에 단계별로 적용돼. 지원하지 않는 기기는 기존 색상/마스크 효과만 보여줘.", 12, MUTED))
 
 	if OS.get_name() == "Android":
 		content.add_child(_label("선택형 앱 개입 (v0.8.0 실험)", 22, WHITE, true))
@@ -618,6 +641,40 @@ func _build_ui() -> void:
 		target_input.text = str(settings["selected_packages"])
 		target_input.select_all_on_focus = false
 		select_card.add_child(target_input)
+		select_card.add_child(_label("설치된 앱에서 직접 선택", 14, WHITE, true))
+		var app_search = LineEdit.new()
+		app_search.placeholder_text = "앱 이름이나 패키지명 검색"
+		select_card.add_child(app_search)
+		var app_list = ItemList.new()
+		app_list.select_mode = ItemList.SELECT_MULTI
+		app_list.custom_minimum_size = Vector2(0, 230)
+		select_card.add_child(app_list)
+		var load_apps = _button("설치된 앱 불러오기", false)
+		select_card.add_child(load_apps)
+		load_apps.pressed.connect(func() -> void:
+			if bridge != null:
+				picker_cached_lines = str(bridge.getLaunchableApps()).split("\n", false)
+				_update_picker_results(app_list, app_search.text)
+		)
+		app_search.text_changed.connect(func(query: String) -> void:
+			_update_picker_results(app_list, query)
+		)
+		var add_selected_apps = _button("선택한 앱을 대상 목록에 추가", false)
+		select_card.add_child(add_selected_apps)
+		add_selected_apps.pressed.connect(func() -> void:
+			var packages: PackedStringArray = PackedStringArray()
+			for existing in target_input.text.split(",", false):
+				var pkg: String = existing.strip_edges()
+				if not pkg.is_empty() and not packages.has(pkg):
+					packages.append(pkg)
+			for selected_index in app_list.get_selected_items():
+				var pkg: String = str(app_list.get_item_metadata(selected_index))
+				if not packages.has(pkg):
+					packages.append(pkg)
+			target_input.text = ",".join(packages)
+			settings["selected_packages"] = target_input.text
+			_settings_changed()
+		)
 		var save_targets = _button("대상 앱 목록 저장", false)
 		select_card.add_child(save_targets)
 		save_targets.pressed.connect(func() -> void:
@@ -681,7 +738,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.8.0 (Selective Preview) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.1 (Picker + Blur Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -694,6 +751,21 @@ func _build_ui() -> void:
 		stripe.visible = false
 		add_child(stripe)
 		stripes.append(stripe)
+
+func _update_picker_results(list: ItemList, query: String) -> void:
+	list.clear()
+	var term := query.strip_edges().to_lower()
+	for line in picker_cached_lines:
+		var parts := line.split("\t", false, 1)
+		if parts.size() != 2:
+			continue
+		var package_name: String = parts[0]
+		var app_name: String = parts[1]
+		if not term.is_empty() and term not in package_name.to_lower() and term not in app_name.to_lower():
+			continue
+		list.add_item("%s  ·  %s" % [app_name, package_name])
+		list.set_item_metadata(list.item_count - 1, package_name)
+
 
 func status_label_placeholder() -> Label:
 	status_label = _label("●  보호 중지", 15, MUTED, true)
