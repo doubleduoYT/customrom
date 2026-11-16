@@ -7,6 +7,7 @@ on:
       - feature/godot-overuse-controller
       - feature/smart-recovery-v0.7.0
       - feature/selective-intervention-v0.8.0
+      - feature/app-picker-fullscreen-blur-v0.8.1
     paths:
       - 'godot/**'
       - '.github/workflows/build-godot.yml'
@@ -67,6 +68,15 @@ jobs:
             godot/android-bridge/plugin/src/main/java/com/hgsoft/overusebridge/AppSelectionPolicy.java \
             godot/tests/AppSelectionPolicyTest.java
           java -cp /tmp/overuse-selection-policy-test com.hgsoft.overusebridge.AppSelectionPolicyTest
+      - name: Test Android full-screen blur stage policy
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p /tmp/overuse-blur-policy-test
+          javac -d /tmp/overuse-blur-policy-test \
+            godot/android-bridge/plugin/src/main/java/com/hgsoft/overusebridge/BlurPolicy.java \
+            godot/tests/BlurPolicyTest.java
+          java -cp /tmp/overuse-blur-policy-test com.hgsoft.overusebridge.BlurPolicyTest
       - name: Build Android native overlay bridge (Godot plugin v2)
         shell: bash
         run: |
