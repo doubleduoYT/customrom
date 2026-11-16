@@ -4,6 +4,15 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.content.pm.ResolveInfo;
+import android.telecom.TelecomManager;
+import android.provider.Telephony;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
@@ -89,6 +98,71 @@ public class OveruseBridge extends GodotPlugin {
         if (isRunning()) send("REFRESH", -1);
     }
 
+
+    /**
+     * Tab-delimited launcher app lines (package<TAB>label), sorted by label.
+     * No QUERY_ALL_PACKAGES / no usage history. Protected apps are omitted.
+     */
+    @UsedByGodot
+    public String getLaunchableApps() {
+        Activity activity = getActivity();
+        if (activity == null) return "";
+        try {
+            PackageManager pm = activity.getPackageManager();
+            Intent launcher = new Intent(Intent.ACTION_MAIN);
+            launcher.addCategory(Intent.CATEGORY_LAUNCHER);
+            List<ResolveInfo> found = pm.queryIntentActivities(launcher, 0);
+            String defaultDialer = "";
+            String defaultSms = "";
+            try {
+                TelecomManager telecom = (TelecomManager) activity.getSystemService(Context.TELECOM_SERVICE);
+                if (telecom != null && telecom.getDefaultDialerPackage() != null)
+                    defaultDialer = telecom.getDefaultDialerPackage();
+                String sms = Telephony.Sms.getDefaultSmsPackage(activity);
+                if (sms != null) defaultSms = sms;
+            } catch (SecurityException ignored) { }
+            Set<String> seen = new HashSet<>();
+            List<String[]> rows = new ArrayList<>();
+            for (ResolveInfo item : found) {
+                if (item.activityInfo == null) continue;
+                String pkg = item.activityInfo.packageName.toLowerCase(Locale.ROOT);
+                if (!seen.add(pkg) || AppSelectionPolicy.isProtected(
+                        pkg, activity.getPackageName(), defaultDialer, defaultSms)) continue;
+                CharSequence labelValue = item.loadLabel(pm);
+                String label = labelValue == null ? pkg : labelValue.toString();
+                label = label.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ').trim();
+                if (label.isEmpty()) label = pkg;
+                rows.add(new String[]{pkg, label});
+            }
+            rows.sort((a, b) -> a[1].compareToIgnoreCase(b[1]));
+            StringBuilder output = new StringBuilder();
+            for (int i = 0; i < Math.min(300, rows.size()); i++) {
+                if (output.length() != 0) output.append('\n');
+                output.append(rows.get(i)[0]).append('\t').append(rows.get(i)[1]);
+            }
+            return output.toString();
+        } catch (RuntimeException error) {
+            android.util.Log.w("OveruseController", "Launcher app picker unavailable", error);
+            return "";
+        }
+    }
+
+    @UsedByGodot
+    public void setBlurConfig(boolean enabled, int maxRadiusDp) {
+        prefs().edit()
+                .putBoolean("blur_enabled", enabled)
+                .putInt("blur_max_dp", Math.max(5, Math.min(40, maxRadiusDp)))
+                .apply();
+        if (isRunning()) send("REFRESH", -1);
+    }
+
+    @UsedByGodot
+    public String getBlurStatus() {
+        if (!prefs().getBoolean("blur_enabled", false)) return "BLUR_OFF";
+        if (Build.VERSION.SDK_INT < 31) return "BLUR_REQUIRES_ANDROID_12";
+        return prefs().getString("blur_status", "BLUR_WAITING_STAGE");
+    }
+
     @UsedByGodot
     public boolean hasUsageAccess() {
         Activity activity = getActivity();
@@ -158,7 +232,7 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.8.0-android-selective-preview";
+        return "0.8.1-android-picker-blur-preview";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }
