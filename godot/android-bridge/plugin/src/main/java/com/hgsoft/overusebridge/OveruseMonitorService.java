@@ -292,8 +292,8 @@ public final class OveruseMonitorService extends Service {
             setBlurStatus("BLUR_SYSTEM_DISABLED");
             return 0;
         }
-        int maxDp = Math.max(5, Math.min(40, prefs.getInt("blur_max_dp", 26)));
-        int pixels = Math.round((maxDp * stage / 5f) * getResources().getDisplayMetrics().density);
+        int blurDp = BlurPolicy.radiusDp(stage, prefs.getInt("blur_max_dp", 26));
+        int pixels = Math.round(blurDp * getResources().getDisplayMetrics().density);
         if (pixels <= 0) {
             setBlurStatus("BLUR_WAITING_STAGE");
             return 0;
