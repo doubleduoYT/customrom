@@ -36,7 +36,14 @@ public class OveruseBridge extends GodotPlugin {
     }
 
     private SharedPreferences prefs() {
-        return getActivity().getApplicationContext().getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        SharedPreferences p = getActivity().getApplicationContext()
+                .getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        // Also migrate when the UI opens without starting the monitor yet.
+        if (!p.getBoolean("analytics_v084_migrated", false)) {
+            p.edit().remove("today_target_ms").remove("today_other_app_ms")
+                    .putBoolean("analytics_v084_migrated", true).commit();
+        }
+        return p;
     }
 
     @UsedByGodot
