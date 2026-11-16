@@ -227,6 +227,16 @@ public class OveruseBridge extends GodotPlugin {
     }
 
     @UsedByGodot
+    public String getAnalyticsReadiness() {
+        SharedPreferences p = prefs();
+        if (!p.getBoolean("analytics_enabled", false)) return "기록 OFF · 앱별 데이터 수집 안 함";
+        if (!p.getBoolean("selective_enabled", false)) return "선택형 앱 개입을 켜야 기록할 수 있어";
+        if (!hasUsageAccess()) return "앱 사용기록 접근 권한이 필요해";
+        if (!isRunning()) return "보호 시작을 누르면 기록이 시작돼";
+        return "선택한 앱을 실제로 사용할 때만 기록 중 · 측정값은 추정치";
+    }
+
+    @UsedByGodot
     public String getAnalyticsSummary() {
         String summary = todayAnalytics().summary();
         return (prefs().getBoolean("analytics_enabled", false) ? "" : "기록 중지 · ") + summary;
@@ -239,7 +249,10 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public void clearAnalytics() {
-        prefs().edit().remove("analytics_data").apply();
+        // Deleting optional app-level statistics must also delete its
+        // target/other-app duration totals, including when service is stopped.
+        prefs().edit().remove("analytics_data")
+                .remove("today_target_ms").remove("today_other_app_ms").commit();
         if (isRunning()) send("CLEAR_ANALYTICS", -1);
     }
 
@@ -285,7 +298,7 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public String getBridgeVersion() {
-        return "0.8.3-android-optin-analytics-preview";
+        return "0.8.4-android-analytics-consent-safety-preview";
     }
 
     @UsedByGodot public boolean isRunning() { return prefs().getBoolean("running", false); }
