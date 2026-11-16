@@ -8,6 +8,7 @@ on:
       - feature/smart-recovery-v0.7.0
       - feature/selective-intervention-v0.8.0
       - feature/app-picker-fullscreen-blur-v0.8.1
+      - feature/v0.8.2-picker-safety
     paths:
       - 'godot/**'
       - '.github/workflows/build-godot.yml'
@@ -105,6 +106,17 @@ jobs:
           grep -q "failures: 0" /tmp/overuse-recovery-test.log
           if grep -E 'SCRIPT ERROR|Parse Error|FAIL:' /tmp/overuse-recovery-test.log; then
             echo "Recovery regression test failed"
+            exit 1
+          fi
+      - name: Test selected-app picker persistence (Godot headless)
+        shell: bash
+        run: |
+          set -o pipefail
+          godot --headless --path godot --script res://tests/app_picker_test.gd 2>&1 | tee /tmp/overuse-app-picker.log
+          grep -q "App picker checks:" /tmp/overuse-app-picker.log
+          grep -q "failures: 0" /tmp/overuse-app-picker.log
+          if grep -E 'SCRIPT ERROR|Parse Error|FAIL:' /tmp/overuse-app-picker.log; then
+            echo "App picker test failed"
             exit 1
           fi
       - name: Export Windows x64
