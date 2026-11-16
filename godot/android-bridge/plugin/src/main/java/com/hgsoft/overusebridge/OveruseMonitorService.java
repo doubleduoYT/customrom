@@ -386,7 +386,12 @@ public final class OveruseMonitorService extends Service {
     }
 
     private void clearOverlay() {
-        if (overlay == null) return;
+        if (prefs != null && prefs.getBoolean("blur_enabled", false))
+            setBlurStatus("BLUR_INACTIVE");
+        if (overlay == null) {
+            currentBlurRadiusPx = -1;
+            return;
+        }
         try {
             wm.removeViewImmediate(overlay);
         } catch (RuntimeException ignored) { }
