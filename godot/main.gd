@@ -504,7 +504,7 @@ func _refresh_view() -> void:
 				var cells := rows[row_index].split("\t", false)
 				if cells.size() == 5:
 					view.append("%s · %d분 (단계 도달 %d분), 이탈 추정 %s / 재진입 %s" % [
-						cells[0], int(cells[1]) / 60000, int(cells[2]) / 60000, cells[3], cells[4]])
+						cells[0], int(int(cells[1]) / 60000.0), int(int(cells[2]) / 60000.0), cells[3], cells[4]])
 			analytics_apps_label.text = "기록된 앱 없음" if view.is_empty() else "\n".join(view)
 			if rows.size() > 7:
 				analytics_apps_label.text += "\n… 나머지는 공유하기에서 확인"
