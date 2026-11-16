@@ -293,6 +293,8 @@ public class OveruseBridge extends GodotPlugin {
     @UsedByGodot public long getActiveMs() { return prefs().getLong("active_ms", 0L); }
     @UsedByGodot public long getTodayActiveMs() { return prefs().getLong("today_active_ms", 0L); }
     @UsedByGodot public long getTodayRestMs() { return prefs().getLong("today_rest_ms", 0L); }
+    @UsedByGodot public long getTodayTargetMs() { return prefs().getLong("today_target_ms", 0L); }
+    @UsedByGodot public long getTodayOtherAppMs() { return prefs().getLong("today_other_app_ms", 0L); }
     @UsedByGodot public long getNextStageMs() { return prefs().getLong("stage_at_ms", 600000L); }
     @UsedByGodot public long getPausedUntil() { return prefs().getLong("pause_until", 0L); }
 }
