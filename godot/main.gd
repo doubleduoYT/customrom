@@ -20,7 +20,8 @@ var settings = {
 	"strength": 65, "color": true, "masks": true,
 	"blur_enabled": false, "blur_max_dp": 26,
 	"cpu_windows_enabled": false, "cpu_android_root": false,
-	"selective_android": false, "selected_packages": ""
+	"selective_android": false, "selected_packages": "",
+	"analytics_enabled": false
 }
 var bridge: Object = null
 var pending_android_start := false
@@ -56,6 +57,8 @@ var active_label: Label
 var daily_label: Label
 var selective_status_label: Label
 var blur_status_label: Label
+var analytics_summary_label: Label
+var analytics_apps_label: Label
 var picker_cached_lines: PackedStringArray = PackedStringArray()
 var picker_checked_packages: Dictionary = {}
 var next_label: Label
@@ -455,6 +458,7 @@ func _settings_changed() -> void:
 	if bridge != null:
 		bridge.setSelectiveConfig(bool(settings["selective_android"]), str(settings["selected_packages"]))
 		bridge.setBlurConfig(bool(settings["blur_enabled"]), int(settings["blur_max_dp"]))
+		bridge.setAnalyticsEnabled(bool(settings["analytics_enabled"]))
 		bridge.setConfig(int(settings["grace"]), int(settings["interval"]),
 			int(settings["recovery"]), int(settings["strength"]),
 			bool(settings["color"]), bool(settings["masks"]), bool(settings["smart_recovery"]))
@@ -490,6 +494,20 @@ func _refresh_view() -> void:
 	pause_button.disabled = not running
 	pause_button.text = "보호 계속하기" if paused else "15분 일시정지"
 	if bridge != null:
+		if is_instance_valid(analytics_summary_label):
+			analytics_summary_label.text = str(bridge.getAnalyticsSummary())
+		if is_instance_valid(analytics_apps_label):
+			var report: String = str(bridge.getAnalyticsReport())
+			var rows := report.split("\n", false)
+			var view: PackedStringArray = PackedStringArray()
+			for row_index in range(1, mini(rows.size(), 7)):
+				var cells := rows[row_index].split("\t", false)
+				if cells.size() == 5:
+					view.append("%s · %d분 (단계 도달 %d분), 이탈 추정 %s / 재진입 %s" % [
+						cells[0], int(cells[1]) / 60000, int(cells[2]) / 60000, cells[3], cells[4]])
+			analytics_apps_label.text = "기록된 앱 없음" if view.is_empty() else "\n".join(view)
+			if rows.size() > 7:
+				analytics_apps_label.text += "\n… 나머지는 공유하기에서 확인"
 		if is_instance_valid(blur_status_label):
 			var blur_state: String = str(bridge.getBlurStatus())
 			match blur_state:
@@ -714,6 +732,37 @@ func _build_ui() -> void:
 		select_card.add_child(selective_status_label)
 		select_card.add_child(_label("본인 기기에서 직접 허용해야 해. 전화·설정·일부 시스템 앱은 항상 제외되고, 대상 목록은 기기 안에만 저장돼.", 12, MUTED))
 
+	if OS.get_name() == "Android":
+		content.add_child(_label("선택한 앱 사용 분석 · v0.8.3 실험", 22, WHITE, true))
+		content.add_child(_label("기본값 OFF. 선택형 모드와 사용기록 권한을 켠 경우에만 대상 앱별 시간을 기기에 저장해. 앱을 나간 이유까지 알 수는 없어.", 13, MUTED))
+		_add_toggle(content, "선택한 앱 사용 통계 기록 (동의)", "analytics_enabled")
+		var analytics_card = _card(content)
+		analytics_summary_label = _label("오늘의 기록 확인 중...", 14, WHITE, true)
+		analytics_card.add_child(analytics_summary_label)
+		analytics_apps_label = _label("기록된 앱 없음", 12, MUTED)
+		analytics_card.add_child(analytics_apps_label)
+		var share_analytics = _button("오늘의 사용 기록 공유하기", false)
+		analytics_card.add_child(share_analytics)
+		share_analytics.pressed.connect(func() -> void:
+			if bridge != null:
+				bridge.shareAnalytics()
+		)
+		var clear_analytics = _button("저장된 사용 기록 삭제", false)
+		analytics_card.add_child(clear_analytics)
+		var confirm_clear = ConfirmationDialog.new()
+		confirm_clear.title = "사용 기록 삭제"
+		confirm_clear.dialog_text = "기기에 저장된 앱별 사용 시간과 이탈·재진입 통계를 모두 삭제할까?"
+		add_child(confirm_clear)
+		clear_analytics.pressed.connect(func() -> void:
+			confirm_clear.popup_centered()
+		)
+		confirm_clear.confirmed.connect(func() -> void:
+			if bridge != null:
+				bridge.clearAnalytics()
+				_refresh_view()
+		)
+		analytics_card.add_child(_label("외부 앱으로 공유하면 선택 앱의 패키지명과 집계 시간이 전달돼. 자동 업로드는 없어. 기록 OFF 또는 15분 일시정지 중에는 새로운 기록을 만들지 않아.", 12, MUTED))
+
 	content.add_child(_label("CPU 성능 제한", 22, WHITE, true))
 	if OS.get_name() == "Windows":
 		content.add_child(_label("선택한 프로그램만 Job Object로 제한해. 다른 프로그램은 건드리지 않아.", 13, MUTED))
@@ -757,7 +806,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.8.2 (Picker & Safety Preview) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.3 (Opt-in Analytics Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
