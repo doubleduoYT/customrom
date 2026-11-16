@@ -628,6 +628,8 @@ func _build_ui() -> void:
 	_add_toggle(content, "부드러운 색상 오버레이", "color")
 	_add_toggle(content, "화면 가림 마스크", "masks")
 	_add_slider(content, "효과 강도", "strength", 0, 100, "%")
+	if OS.get_name() == "Windows":
+		content.add_child(_label("전체 화면 Blur는 Windows에서 아직 미지원이야. 지금은 색상 오버레이와 화면 가림 효과만 작동해.", 12, WARNING))
 	if OS.get_name() == "Android":
 		_add_toggle(content, "전체 화면 흐림 (Android 12+, 실험 기능)", "blur_enabled")
 		_add_slider(content, "5단계 최대 흐림 반경", "blur_max_dp", 5, 40, "dp")
@@ -755,7 +757,7 @@ func _build_ui() -> void:
 	info_label = _label("플랫폼 기능 확인 중…", 13, MUTED)
 	info.add_child(info_label)
 	info.add_child(_label("전화나 다른 앱의 터치는 차단하지 않아. 언제든 일시정지·종료할 수 있어.", 12, MUTED))
-	content.add_child(_label("Overuse Controller v0.8.2 (Picker Safety Preview) · Godot Engine 4.5.2", 12, MUTED))
+	content.add_child(_label("Overuse Controller v0.8.2 (Picker & Safety Preview) · Godot Engine 4.5.2", 12, MUTED))
 
 	overlay = ColorRect.new()
 	overlay.mouse_filter = Control.MOUSE_FILTER_IGNORE
