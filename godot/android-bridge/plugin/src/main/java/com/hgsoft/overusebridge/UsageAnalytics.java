@@ -62,13 +62,8 @@ final class UsageAnalytics {
             return;
         }
 
-        // Only observed, known target -> off-target transitions count as exits.
-        if (!previousTarget.isEmpty() && !previousTarget.equals(target)) {
-            Stats previous = statsFor(previousTarget);
-            if (previous != null) previous.exits = Math.min(10000, previous.exits + 1);
-            lastExitedTarget = previousTarget;
-            lastExitUptime = uptimeMs;
-        }
+        // Check reentry before registering the next exit. This also handles
+        // switching from one selected app to another and back again.
         if (!target.isEmpty() && !target.equals(previousTarget)
                 && target.equals(lastExitedTarget) && lastExitUptime >= 0L
                 && uptimeMs >= lastExitUptime
@@ -77,6 +72,13 @@ final class UsageAnalytics {
             if (again != null) again.reentries = Math.min(10000, again.reentries + 1);
             lastExitedTarget = "";
             lastExitUptime = -1L;
+        }
+        // Only known transitions away from a target count as inferred exits.
+        if (!previousTarget.isEmpty() && !previousTarget.equals(target)) {
+            Stats previous = statsFor(previousTarget);
+            if (previous != null) previous.exits = Math.min(10000, previous.exits + 1);
+            lastExitedTarget = previousTarget;
+            lastExitUptime = uptimeMs;
         }
         if (lastExitUptime >= 0L && uptimeMs - lastExitUptime > REENTRY_WINDOW_MS) {
             lastExitedTarget = "";
