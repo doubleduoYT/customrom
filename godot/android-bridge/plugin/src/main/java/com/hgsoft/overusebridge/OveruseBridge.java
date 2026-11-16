@@ -214,7 +214,9 @@ public class OveruseBridge extends GodotPlugin {
 
     @UsedByGodot
     public void setAnalyticsEnabled(boolean enabled) {
-        prefs().edit().putBoolean("analytics_enabled", enabled).apply();
+        SharedPreferences p = prefs();
+        if (p.getBoolean("analytics_enabled", false) == enabled) return;
+        p.edit().putBoolean("analytics_enabled", enabled).apply();
         if (isRunning()) send("ANALYTICS_CONFIG", -1);
     }
 
