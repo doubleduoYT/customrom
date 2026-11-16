@@ -52,6 +52,8 @@ public final class OveruseMonitorService extends Service {
     private String todayKey = "";
     private long todayActiveMs;
     private long todayRestMs;
+    private long todayTargetMs;
+    private long todayOtherAppMs;
     private long stageAtMs;
     private long pauseUntil;
     private long lastTick;
@@ -80,6 +82,7 @@ public final class OveruseMonitorService extends Service {
                 } else if (screenActive && inTarget) {
                     activeMs += delta;
                     todayActiveMs += delta;
+                    if (selective) todayTargetMs += delta;
                     recoveryMs = 0L;
                     restStreakMs = 0L;
                     restBonusAwarded = false;
@@ -95,6 +98,9 @@ public final class OveruseMonitorService extends Service {
                         todayRestMs += delta;
                         restStreakMs += delta;
                     } else {
+                        if (selective && appMonitor != null && appMonitor.foregroundKnown())
+                            todayOtherAppMs += delta;
+
                         // Leaving a selected app is a break from that app, not
                         // proof of physical rest. It can recover a normal stage,
                         // but cannot earn the three-minute screen-off bonus.
@@ -171,6 +177,8 @@ public final class OveruseMonitorService extends Service {
         todayKey = prefs.getString("today_key", "");
         todayActiveMs = prefs.getLong("today_active_ms", 0L);
         todayRestMs = prefs.getLong("today_rest_ms", 0L);
+        todayTargetMs = prefs.getLong("today_target_ms", 0L);
+        todayOtherAppMs = prefs.getLong("today_other_app_ms", 0L);
         rollDailyCounters();
         stageAtMs = prefs.getLong("stage_at_ms", graceMs());
         pauseUntil = prefs.getLong("pause_until", 0L);
@@ -249,6 +257,8 @@ public final class OveruseMonitorService extends Service {
             todayKey = key;
             todayActiveMs = 0L;
             todayRestMs = 0L;
+            todayTargetMs = 0L;
+            todayOtherAppMs = 0L;
         }
         if (usageAnalytics != null) usageAnalytics.startDay(key);
     }
@@ -284,6 +294,8 @@ public final class OveruseMonitorService extends Service {
                 .putString("today_key", todayKey)
                 .putLong("today_active_ms", todayActiveMs)
                 .putLong("today_rest_ms", todayRestMs)
+                .putLong("today_target_ms", todayTargetMs)
+                .putLong("today_other_app_ms", todayOtherAppMs)
                 .putLong("stage_at_ms", stageAtMs)
                 .putLong("pause_until", pauseUntil)
                 .putString("analytics_data", usageAnalytics == null ? "" : usageAnalytics.encode())
