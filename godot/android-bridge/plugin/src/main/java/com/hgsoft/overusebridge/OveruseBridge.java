@@ -254,7 +254,7 @@ public class OveruseBridge extends GodotPlugin {
         UsageAnalytics stats = todayAnalytics();
         if (stats.recordedApps() == 0) return;
         String day = new SimpleDateFormat("yyyy-MM-dd", Locale.US).format(new Date());
-        String report = "Overuse Controller local usage estimate · " + day + "\\n" + stats.report();
+        String report = "Overuse Controller local usage estimate · " + day + "\n" + stats.report();
         activity.runOnUiThread(() -> {
             Intent share = new Intent(Intent.ACTION_SEND);
             share.setType("text/plain");
