@@ -496,6 +496,10 @@ func _refresh_view() -> void:
 					blur_status_label.text = "화면 전체 흐림 꺼짐"
 				"BLUR_ACTIVE":
 					blur_status_label.text = "전체 화면 흐림 적용 중"
+				"BLUR_INACTIVE":
+					blur_status_label.text = "대상 앱을 사용하지 않거나 일시정지 중 · 흐림 해제"
+				"BLUR_WAITING_STAGE":
+					blur_status_label.text = "사용 시간 초과 후 단계가 오르면 흐림 적용"
 				"BLUR_REQUIRES_ANDROID_12":
 					blur_status_label.text = "전체 흐림은 Android 12 이상에서 지원"
 				"BLUR_SYSTEM_DISABLED":
